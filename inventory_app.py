@@ -1,10 +1,9 @@
 import streamlit as st
 import requests
-import json
 from datetime import datetime
+import csv, io
 
 GAS_URL = "https://script.google.com/macros/s/AKfycbzvGHwizg3fNi8Rae1_hUp9Nzoxc3U24iv8FpuivdWFf2lVqyId1JOzgHne--1A97oX/exec"
-
 INVENTORY_HEADERS = ["id","商品名","ブランド","カテゴリ","サイズ","仕入れ値","販売予定価格","保管場所","メモ","登録日","状態"]
 SALES_HEADERS = ["id","商品id","商品名","ブランド","実売価格","販売日","メモ"]
 RETURNS_HEADERS = ["id","販売id","商品名","返品日","メモ"]
@@ -29,8 +28,13 @@ def gas_delete(sheet, row_index):
     requests.post(GAS_URL, json={"action":"delete","sheet":sheet,"row_index":row_index+1}, timeout=15)
     st.cache_data.clear()
 
-st.set_page_config(page_title="古着屋在庫管理", layout="wide")
+def search_filter(items, keyword, keys):
+    if not keyword:
+        return items
+    kw = keyword.lower()
+    return [i for i in items if any(kw in str(i.get(k,"")).lower() for k in keys)]
 
+st.set_page_config(page_title="古着屋在庫管理", layout="wide")
 menu = st.sidebar.radio("画面を選択", ["ダッシュボード","商品登録","販売記録","在庫一覧・編集","販売取消・返品","CSV出力"])
 
 if menu == "ダッシュボード":
@@ -41,11 +45,7 @@ if menu == "ダッシュボード":
     this_month = datetime.now().strftime("%Y-%m")
     month_sales = [s for s in sales if str(s.get("販売日","")).startswith(this_month)]
     revenue = sum(int(s.get("実売価格",0)) for s in month_sales)
-    costs = []
-    for s in month_sales:
-        matched = [i for i in inventory if str(i.get("id")) == str(s.get("商品id"))]
-        if matched:
-            costs.append(int(matched[0].get("仕入れ値",0)))
+    costs = [int(next((i for i in inventory if str(i.get("id"))==str(s.get("商品id"))),{}).get("仕入れ値",0)) for s in month_sales]
     profit = revenue - sum(costs)
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("在庫数", len(active))
@@ -79,17 +79,13 @@ elif menu == "販売記録":
     st.title("販売記録をつける")
     inventory = gas_get("inventory")
     active = [i for i in inventory if i.get("状態") == "在庫中"]
+    keyword = st.text_input("🔍 検索（商品名・ブランド・カテゴリ）")
+    active = search_filter(active, keyword, ["商品名","ブランド","カテゴリ"])
     if not active:
-        st.info("在庫中の商品がありません")
+        st.info("該当する商品がありません")
     else:
-        keyword = st.text_input("検索（商品名・ブランド・カテゴリ）")
-        if keyword:
-            active = [i for i in active if keyword.lower() in str(i.get("商品名","")).lower() or keyword.lower() in str(i.get("ブランド","")).lower() or keyword.lower() in str(i.get("カテゴリ","")).lower()]
-        if not active:
-            st.info("該当する商品がありません")
-        else:
-            options = {f"{i['商品名']} ({i['ブランド']}) ¥{i['販売予定価格']}": i for i in active}
-            selected = st.selectbox("商品を選択", list(options.keys()))
+        options = {f"{i['商品名']} ({i['ブランド']}) ¥{i['販売予定価格']}": i for i in active}
+        selected = st.selectbox("商品を選択", list(options.keys()))
         item = options[selected]
         with st.form("sell"):
             price = st.number_input("実売価格", min_value=0, value=int(item.get("販売予定価格",0)))
@@ -107,10 +103,13 @@ elif menu == "販売記録":
 elif menu == "在庫一覧・編集":
     st.title("在庫一覧")
     inventory = gas_get("inventory")
-    if not inventory:
+    keyword = st.text_input("🔍 検索（商品名・ブランド・カテゴリ）")
+    filtered = search_filter(inventory, keyword, ["商品名","ブランド","カテゴリ"])
+    if not filtered:
         st.info("まだ商品がありません")
     else:
-        for idx, item in enumerate(inventory):
+        for idx, item in enumerate(filtered):
+            real_idx = inventory.index(item)
             with st.expander(f"{item.get('商品名')} / {item.get('ブランド')} / {item.get('状態')}"):
                 with st.form(f"edit_{idx}"):
                     c1,c2,c3 = st.columns(3)
@@ -125,17 +124,19 @@ elif menu == "在庫一覧・編集":
                     memo = st.text_area("メモ", value=str(item.get("メモ","")))
                     status = st.selectbox("状態", ["在庫中","販売済","返品"], index=["在庫中","販売済","返品"].index(item.get("状態","在庫中")) if item.get("状態") in ["在庫中","販売済","返品"] else 0)
                     if st.form_submit_button("更新"):
-                        gas_update("inventory", idx, [item["id"],name,brand,category,size,buy_price,sell_price,location,memo,item.get("登録日",""),status])
+                        gas_update("inventory", real_idx, [item["id"],name,brand,category,size,buy_price,sell_price,location,memo,item.get("登録日",""),status])
                         st.success("更新しました！")
                         st.rerun()
 
 elif menu == "販売取消・返品":
     st.title("販売取消 / 返品")
     sales = gas_get("sales")
-    if not sales:
-        st.info("販売データがありません")
+    keyword = st.text_input("🔍 検索（商品名・ブランド）")
+    filtered_sales = search_filter(sales, keyword, ["商品名","ブランド"])
+    if not filtered_sales:
+        st.info("対象データがありません")
     else:
-        options = {f"{s['商品名']} / {s['販売日']} / ¥{s['実売価格']}": s for s in sales}
+        options = {f"{s['商品名']} / {s['販売日']} / ¥{s['実売価格']}": s for s in filtered_sales}
         selected = st.selectbox("対象を選択", list(options.keys()))
         item = options[selected]
         with st.form("return"):
@@ -153,7 +154,6 @@ elif menu == "販売取消・返品":
 
 elif menu == "CSV出力":
     st.title("CSVエクスポート")
-    import csv, io
     inventory = gas_get("inventory")
     if inventory:
         output = io.StringIO()
