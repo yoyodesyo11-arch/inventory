@@ -53,6 +53,24 @@ if menu == "ダッシュボード":
     c3.metric("今月利益", f"¥{profit:,}")
     c4.metric("今月販売点数", len(month_sales))
 
+    st.subheader("売れ残りアラート（30日以上）")
+    today = datetime.now().date()
+    alerts = []
+    for i in active:
+        try:
+            reg = datetime.strptime(str(i.get("登録日",""))[:10], "%Y-%m-%d").date()
+            days = (today - reg).days
+            if days >= 30:
+                alerts.append((days, i))
+        except:
+            pass
+    if not alerts:
+        st.info("売れ残りの商品はありません")
+    else:
+        alerts.sort(reverse=True)
+        for days, i in alerts:
+            st.warning(f"⚠️ {i.get('商品名')} / {i.get('ブランド')} — {days}日経過 / 仕入れ¥{i.get('仕入れ値',0):,} / 予定¥{i.get('販売予定価格',0):,}")
+
 elif menu == "商品登録":
     st.title("商品を追加")
     with st.form("add"):
