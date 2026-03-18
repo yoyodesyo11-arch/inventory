@@ -9,31 +9,27 @@ INVENTORY_HEADERS = ["id","商品名","ブランド","カテゴリ","サイズ",
 SALES_HEADERS = ["id","商品id","商品名","ブランド","実売価格","販売日","メモ"]
 RETURNS_HEADERS = ["id","販売id","商品名","返品日","メモ"]
 
+@st.cache_data(ttl=30)
 def gas_get(sheet):
-    r = requests.get(GAS_URL, params={"action":"get","sheet":sheet})
+    r = requests.get(GAS_URL, params={"action":"get","sheet":sheet}, timeout=15)
     data = r.json()
     if len(data) <= 1:
         return []
     return [dict(zip(data[0], row)) for row in data[1:]]
 
 def gas_append(sheet, row):
-    requests.post(GAS_URL, json={"action":"append","sheet":sheet,"row":row})
+    requests.post(GAS_URL, json={"action":"append","sheet":sheet,"row":row}, timeout=15)
+    st.cache_data.clear()
 
 def gas_update(sheet, row_index, row):
-    requests.post(GAS_URL, json={"action":"update","sheet":sheet,"row_index":row_index+1,"row":row})
+    requests.post(GAS_URL, json={"action":"update","sheet":sheet,"row_index":row_index+1,"row":row}, timeout=15)
+    st.cache_data.clear()
 
 def gas_delete(sheet, row_index):
-    requests.post(GAS_URL, json={"action":"delete","sheet":sheet,"row_index":row_index+1})
-
-def init_headers():
-    for sheet, headers in [("inventory",INVENTORY_HEADERS),("sales",SALES_HEADERS),("returns",RETURNS_HEADERS)]:
-        r = requests.get(GAS_URL, params={"action":"get","sheet":sheet})
-        data = r.json()
-        if len(data) == 0:
-            requests.post(GAS_URL, json={"action":"append","sheet":sheet,"row":headers})
+    requests.post(GAS_URL, json={"action":"delete","sheet":sheet,"row_index":row_index+1}, timeout=15)
+    st.cache_data.clear()
 
 st.set_page_config(page_title="古着屋在庫管理", layout="wide")
-init_headers()
 
 menu = st.sidebar.radio("画面を選択", ["ダッシュボード","商品登録","販売記録","在庫一覧・編集","販売取消・返品","CSV出力"])
 
