@@ -3,7 +3,7 @@ import requests
 import json
 from datetime import datetime
 
-GAS_URL = "https://script.google.com/macros/s/AKfycbx7-ZWWZcc77PLFIKto1Tf0ZaxiwTE-W0Sk77lOU3gLJOg9USlFpm2MIbTmb9gxU9Fm/exec"
+GAS_URL = "https://script.google.com/macros/s/AKfycbzvGHwizg3fNi8Rae1_hUp9Nzoxc3U24iv8FpuivdWFf2lVqyId1JOzgHne--1A97oX/exec"
 
 INVENTORY_HEADERS = ["id","商品名","ブランド","カテゴリ","サイズ","仕入れ値","販売予定価格","保管場所","メモ","登録日","状態"]
 SALES_HEADERS = ["id","商品id","商品名","ブランド","実売価格","販売日","メモ"]
