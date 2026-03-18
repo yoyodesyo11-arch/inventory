@@ -82,8 +82,14 @@ elif menu == "販売記録":
     if not active:
         st.info("在庫中の商品がありません")
     else:
-        options = {f"{i['商品名']} ({i['ブランド']}) ¥{i['販売予定価格']}": i for i in active}
-        selected = st.selectbox("商品を選択", list(options.keys()))
+        keyword = st.text_input("検索（商品名・ブランド・カテゴリ）")
+        if keyword:
+            active = [i for i in active if keyword.lower() in str(i.get("商品名","")).lower() or keyword.lower() in str(i.get("ブランド","")).lower() or keyword.lower() in str(i.get("カテゴリ","")).lower()]
+        if not active:
+            st.info("該当する商品がありません")
+        else:
+            options = {f"{i['商品名']} ({i['ブランド']}) ¥{i['販売予定価格']}": i for i in active}
+            selected = st.selectbox("商品を選択", list(options.keys()))
         item = options[selected]
         with st.form("sell"):
             price = st.number_input("実売価格", min_value=0, value=int(item.get("販売予定価格",0)))
