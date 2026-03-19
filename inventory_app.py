@@ -31,6 +31,15 @@ def search_filter(items, keyword, keys):
     return [i for i in items if any(kw in str(i.get(k,"")).lower() for k in keys)]
 
 st.set_page_config(page_title="古着屋在庫管理", layout="wide")
+st.markdown("""
+<style>
+div[data-testid="stForm"] button[kind="primaryFormSubmit"] {
+    background-color: #ff4b4b !important;
+    color: white !important;
+    border: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 menu = st.sidebar.radio("画面を選択", ["ダッシュボード","商品登録","販売記録","在庫一覧・編集","販売取消・返品","CSV出力"])
 
 if menu == "ダッシュボード":
