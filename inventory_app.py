@@ -92,6 +92,7 @@ elif menu == "商品登録":
                 new_id = str(int(max([int(i.get("id",0)) for i in inventory], default=0)) + 1)
                 gas_append("inventory", [new_id,name,brand,category,size,buy_price,sell_price,location,memo,datetime.now().strftime("%Y-%m-%d"),str(buy_date),"在庫中"])
                 st.success("登録しました！")
+                st.rerun()
             else:
                 st.error("商品名は必須です")
 
