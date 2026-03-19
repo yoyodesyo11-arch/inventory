@@ -31,15 +31,29 @@ def search_filter(items, keyword, keys):
     return [i for i in items if any(kw in str(i.get(k,"")).lower() for k in keys)]
 
 st.set_page_config(page_title="古着屋在庫管理", layout="wide")
+
 st.markdown("""
 <style>
-div[data-testid="stForm"] button[kind="primaryFormSubmit"] {
+.status-btn-active {
     background-color: #ff4b4b !important;
     color: white !important;
-    border: none !important;
+    border: 1px solid #ff4b4b !important;
+    padding: 4px 16px;
+    border-radius: 4px;
+    cursor: default;
+    font-weight: bold;
+}
+.status-btn-inactive {
+    background-color: white;
+    color: #333;
+    border: 1px solid #ccc;
+    padding: 4px 16px;
+    border-radius: 4px;
+    cursor: pointer;
 }
 </style>
 """, unsafe_allow_html=True)
+
 menu = st.sidebar.radio("画面を選択", ["ダッシュボード","商品登録","販売記録","在庫一覧・編集","販売取消・返品","CSV出力"])
 
 if menu == "ダッシュボード":
@@ -77,8 +91,6 @@ if menu == "ダッシュボード":
 
 elif menu == "商品登録":
     st.title("商品を追加")
-    if "reg_done" not in st.session_state:
-        st.session_state.reg_done = False
     with st.form("add", clear_on_submit=True):
         c1,c2,c3 = st.columns(3)
         name = c1.text_input("商品名 *")
@@ -113,7 +125,7 @@ elif menu == "販売記録":
         options = {f"{i['商品名']} ({i['ブランド']}) ¥{i['販売予定価格']}": i for i in active}
         selected = st.selectbox("商品を選択", list(options.keys()))
         item = options[selected]
-        with st.form("sell"):
+        with st.form("sell", clear_on_submit=True):
             price = st.number_input("実売価格", min_value=0, value=int(item.get("販売予定価格",0)))
             date = st.date_input("販売日", value=datetime.now())
             memo = st.text_area("メモ")
@@ -121,10 +133,11 @@ elif menu == "販売記録":
                 sales = gas_get("sales")
                 new_id = str(int(max([int(s.get("id",0)) for s in sales], default=0)) + 1)
                 gas_append("sales", [new_id,item["id"],item["商品名"],item["ブランド"],price,str(date),memo])
-                idx = next(i for i,v in enumerate(inventory) if v["id"] == item["id"])
-                row = inventory[idx]
-                gas_update("inventory", idx, [row["id"],row["商品名"],row["ブランド"],row["カテゴリ"],row["サイズ"],row["仕入れ値"],row["販売予定価格"],row["保管場所"],row["メモ"],row["登録日"],row.get("仕入れ日",""),"販売済"])
+                real_idx = next(i for i,v in enumerate(inventory) if str(v["id"]) == str(item["id"]))
+                row = inventory[real_idx]
+                gas_update("inventory", real_idx, [row["id"],row["商品名"],row["ブランド"],row["カテゴリ"],row["サイズ"],row["仕入れ値"],row["販売予定価格"],row["保管場所"],row["メモ"],row["登録日"],row.get("仕入れ日",""),"販売済"])
                 st.success("販売記録しました！")
+                st.rerun()
 
 elif menu == "在庫一覧・編集":
     st.title("在庫一覧")
@@ -154,24 +167,23 @@ elif menu == "在庫一覧・編集":
                     buy_date = c7.date_input("仕入れ日", value=bd, key=f"bd_{idx}")
                     location = c8.text_input("保管場所", value=str(item.get("保管場所","")))
                     memo = st.text_area("メモ", value=str(item.get("メモ","")))
-                    st.write("状態")
-                    col1, col2, col3 = st.columns(3)
-                    status = item.get("状態","在庫中")
-                    new_status = status
-                    if col1.form_submit_button("在庫中", type="primary" if status=="在庫中" else "secondary"):
-                        new_status = "在庫中"
-                    if col2.form_submit_button("販売済", type="primary" if status=="販売済" else "secondary"):
-                        new_status = "販売済"
-                    if col3.form_submit_button("返品", type="primary" if status=="返品" else "secondary"):
-                        new_status = "返品"
-                    if new_status != status:
-                        gas_update("inventory", real_idx, [item["id"],name,brand,category,size,buy_price,sell_price,location,memo,item.get("登録日",""),str(buy_date),new_status])
-                        st.success("更新しました！")
-                        st.rerun()
                     if st.form_submit_button("更新"):
-                        gas_update("inventory", real_idx, [item["id"],name,brand,category,size,buy_price,sell_price,location,memo,item.get("登録日",""),str(buy_date),status])
+                        gas_update("inventory", real_idx, [item["id"],name,brand,category,size,buy_price,sell_price,location,memo,item.get("登録日",""),str(buy_date),item.get("状態","在庫中")])
                         st.success("更新しました！")
                         st.rerun()
+
+                status = item.get("状態","在庫中")
+                st.write("状態を変更")
+                col1, col2, col3 = st.columns(3)
+                if col1.button("在庫中", key=f"s1_{idx}", type="primary" if status=="在庫中" else "secondary"):
+                    gas_update("inventory", real_idx, [item["id"],item.get("商品名"),item.get("ブランド"),item.get("カテゴリ"),item.get("サイズ"),item.get("仕入れ値"),item.get("販売予定価格"),item.get("保管場所"),item.get("メモ"),item.get("登録日"),item.get("仕入れ日",""),"在庫中"])
+                    st.rerun()
+                if col2.button("販売済", key=f"s2_{idx}", type="primary" if status=="販売済" else "secondary"):
+                    gas_update("inventory", real_idx, [item["id"],item.get("商品名"),item.get("ブランド"),item.get("カテゴリ"),item.get("サイズ"),item.get("仕入れ値"),item.get("販売予定価格"),item.get("保管場所"),item.get("メモ"),item.get("登録日"),item.get("仕入れ日",""),"販売済"])
+                    st.rerun()
+                if col3.button("返品", key=f"s3_{idx}", type="primary" if status=="返品" else "secondary"):
+                    gas_update("inventory", real_idx, [item["id"],item.get("商品名"),item.get("ブランド"),item.get("カテゴリ"),item.get("サイズ"),item.get("仕入れ値"),item.get("販売予定価格"),item.get("保管場所"),item.get("メモ"),item.get("登録日"),item.get("仕入れ日",""),"返品"])
+                    st.rerun()
 
 elif menu == "販売取消・返品":
     st.title("販売取消 / 返品")
