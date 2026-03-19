@@ -8,7 +8,7 @@ INVENTORY_HEADERS = ["id","商品名","ブランド","カテゴリ","サイズ",
 SALES_HEADERS = ["id","商品id","商品名","ブランド","実売価格","販売日","メモ"]
 RETURNS_HEADERS = ["id","販売id","商品名","返品日","メモ"]
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=300)
 def gas_get(sheet):
     r = requests.get(GAS_URL, params={"action":"get","sheet":sheet}, timeout=15)
     data = r.json()
