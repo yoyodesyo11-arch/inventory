@@ -4,7 +4,7 @@ from datetime import datetime
 import csv, io
 
 GAS_URL = "https://script.google.com/macros/s/AKfycbzvGHwizg3fNi8Rae1_hUp9Nzoxc3U24iv8FpuivdWFf2lVqyId1JOzgHne--1A97oX/exec"
-INVENTORY_HEADERS = ["id","商品名","ブランド","カテゴリ","サイズ","仕入れ値","販売予定価格","保管場所","メモ","登録日","状態"]
+INVENTORY_HEADERS = ["id","商品名","ブランド","カテゴリ","サイズ","仕入れ値","販売予定価格","保管場所","メモ","登録日","仕入れ日","状態"]
 SALES_HEADERS = ["id","商品id","商品名","ブランド","実売価格","販売日","メモ"]
 RETURNS_HEADERS = ["id","販売id","商品名","返品日","メモ"]
 
@@ -58,7 +58,7 @@ if menu == "ダッシュボード":
     alerts = []
     for i in active:
         try:
-            reg = datetime.strptime(str(i.get("登録日",""))[:10], "%Y-%m-%d").date()
+            reg = datetime.strptime(str(i.get("仕入れ日",""))[:10], "%Y-%m-%d").date()
             days = (today - reg).days
             if days >= 30:
                 alerts.append((days, i))
@@ -82,13 +82,15 @@ elif menu == "商品登録":
         size = c4.text_input("サイズ")
         buy_price = c5.number_input("仕入れ値", min_value=0)
         sell_price = c6.number_input("販売予定価格", min_value=0)
-        location = st.text_input("保管場所/ラック番号")
+        c7,c8 = st.columns(2)
+        buy_date = c7.date_input("仕入れ日", value=datetime.now())
+        location = c8.text_input("保管場所/ラック番号")
         memo = st.text_area("メモ")
         if st.form_submit_button("登録"):
             if name:
                 inventory = gas_get("inventory")
                 new_id = str(int(max([int(i.get("id",0)) for i in inventory], default=0)) + 1)
-                gas_append("inventory", [new_id,name,brand,category,size,buy_price,sell_price,location,memo,datetime.now().strftime("%Y-%m-%d"),"在庫中"])
+                gas_append("inventory", [new_id,name,brand,category,size,buy_price,sell_price,location,memo,datetime.now().strftime("%Y-%m-%d"),str(buy_date),"在庫中"])
                 st.success("登録しました！")
             else:
                 st.error("商品名は必須です")
@@ -115,7 +117,7 @@ elif menu == "販売記録":
                 gas_append("sales", [new_id,item["id"],item["商品名"],item["ブランド"],price,str(date),memo])
                 idx = next(i for i,v in enumerate(inventory) if v["id"] == item["id"])
                 row = inventory[idx]
-                gas_update("inventory", idx, [row["id"],row["商品名"],row["ブランド"],row["カテゴリ"],row["サイズ"],row["仕入れ値"],row["販売予定価格"],row["保管場所"],row["メモ"],row["登録日"],"販売済"])
+                gas_update("inventory", idx, [row["id"],row["商品名"],row["ブランド"],row["カテゴリ"],row["サイズ"],row["仕入れ値"],row["販売予定価格"],row["保管場所"],row["メモ"],row["登録日"],row.get("仕入れ日",""),"販売済"])
                 st.success("販売記録しました！")
 
 elif menu == "在庫一覧・編集":
@@ -138,11 +140,17 @@ elif menu == "在庫一覧・編集":
                     size = c4.text_input("サイズ", value=str(item.get("サイズ","")))
                     buy_price = c5.number_input("仕入れ値", value=int(item.get("仕入れ値",0)))
                     sell_price = c6.number_input("販売予定価格", value=int(item.get("販売予定価格",0)))
-                    location = st.text_input("保管場所", value=str(item.get("保管場所","")))
+                    c7,c8 = st.columns(2)
+                    try:
+                        bd = datetime.strptime(str(item.get("仕入れ日",""))[:10], "%Y-%m-%d").date()
+                    except:
+                        bd = datetime.now().date()
+                    buy_date = c7.date_input("仕入れ日", value=bd, key=f"bd_{idx}")
+                    location = c8.text_input("保管場所", value=str(item.get("保管場所","")))
                     memo = st.text_area("メモ", value=str(item.get("メモ","")))
                     status = st.selectbox("状態", ["在庫中","販売済","返品"], index=["在庫中","販売済","返品"].index(item.get("状態","在庫中")) if item.get("状態") in ["在庫中","販売済","返品"] else 0)
                     if st.form_submit_button("更新"):
-                        gas_update("inventory", real_idx, [item["id"],name,brand,category,size,buy_price,sell_price,location,memo,item.get("登録日",""),status])
+                        gas_update("inventory", real_idx, [item["id"],name,brand,category,size,buy_price,sell_price,location,memo,item.get("登録日",""),str(buy_date),status])
                         st.success("更新しました！")
                         st.rerun()
 
@@ -167,7 +175,7 @@ elif menu == "販売取消・返品":
                 idx = next((i for i,v in enumerate(inventory) if str(v["id"]) == str(item.get("商品id"))), None)
                 if idx is not None:
                     row = inventory[idx]
-                    gas_update("inventory", idx, [row["id"],row["商品名"],row["ブランド"],row["カテゴリ"],row["サイズ"],row["仕入れ値"],row["販売予定価格"],row["保管場所"],row["メモ"],row["登録日"],"在庫中"])
+                    gas_update("inventory", idx, [row["id"],row["商品名"],row["ブランド"],row["カテゴリ"],row["サイズ"],row["仕入れ値"],row["販売予定価格"],row["保管場所"],row["メモ"],row["登録日"],row.get("仕入れ日",""),"在庫中"])
                 st.success("返品処理しました！")
 
 elif menu == "CSV出力":
