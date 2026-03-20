@@ -357,15 +357,34 @@ elif menu == "📦 在庫一覧・編集":
                 if col1.button("🟢 在庫中", key=f"s1_{idx}", type="primary" if status == "在庫中" else "secondary"):
                     st.session_state.setdefault("status_ov", {})[norm_id(item)] = "在庫中"
                     gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "在庫中"])
+                    st.session_state.pop("sell_form_idx", None)
                     st.rerun()
                 if col2.button("⚫ 販売済", key=f"s2_{idx}", type="primary" if status == "販売済" else "secondary"):
-                    st.session_state.setdefault("status_ov", {})[norm_id(item)] = "販売済"
-                    gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "販売済"])
+                    st.session_state["sell_form_idx"] = idx
                     st.rerun()
                 if col3.button("🟠 返品", key=f"s3_{idx}", type="primary" if status == "返品" else "secondary"):
                     st.session_state.setdefault("status_ov", {})[norm_id(item)] = "返品"
                     gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "返品"])
+                    st.session_state.pop("sell_form_idx", None)
                     st.rerun()
+
+                # 販売済ボタン押下後に価格入力フォームを表示
+                if st.session_state.get("sell_form_idx") == idx:
+                    with st.form(key=f"sell_form_{idx}"):
+                        st.markdown("**💰 販売情報を入力**")
+                        fc1, fc2 = st.columns(2)
+                        sell_price_input = fc1.number_input("実売価格 (¥)", min_value=0, value=int(item.get("販売予定価格", 0)), step=100)
+                        sell_date_input = fc2.date_input("販売日", value=datetime.now())
+                        sell_memo = st.text_input("メモ（任意）")
+                        if st.form_submit_button("✅ 販売記録して販売済みにする", type="primary", use_container_width=True):
+                            sales = gas_get("sales")
+                            new_sid = str(int(max([int(s.get("id", 0)) for s in sales], default=0)) + 1)
+                            ok1 = gas_append("sales", [new_sid, item["id"], item.get("商品名"), item.get("ブランド"), sell_price_input, str(sell_date_input), sell_memo])
+                            ok2 = gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "販売済"])
+                            if ok1 and ok2:
+                                st.session_state.setdefault("status_ov", {})[norm_id(item)] = "販売済"
+                                st.session_state.pop("sell_form_idx", None)
+                                st.rerun()
 
 # ── 販売取消・返品 ────────────────────────────────────────────────────
 elif menu == "↩️ 販売取消・返品":
