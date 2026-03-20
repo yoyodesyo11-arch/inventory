@@ -114,7 +114,13 @@ def search_filter(items, keyword, keys):
 
 def update_inventory_status(inventory, item_id, status):
     """在庫のステータスを更新する共通関数"""
-    real_idx = next((i for i, v in enumerate(inventory) if str(v["id"]) == str(item_id)), None)
+    # IDをint文字列に正規化して比較（1.0 / "1" / 1 すべて一致させる）
+    def _norm(v):
+        try:
+            return str(int(float(str(v))))
+        except (ValueError, TypeError):
+            return str(v)
+    real_idx = next((i for i, v in enumerate(inventory) if _norm(v["id"]) == _norm(item_id)), None)
     if real_idx is None:
         st.error("対象の商品が見つかりませんでした")
         return False
@@ -178,9 +184,14 @@ if menu == "📊 ダッシュボード":
                    if str(s.get("販売日", "")).startswith(this_month)
                    and str(s.get("id")) not in returned_sale_ids]
 
-    revenue = sum(int(s.get("実売価格", 0)) for s in month_sales)
-    inv_map = {str(i["id"]): i for i in inventory}
-    costs = sum(int(inv_map.get(str(s.get("商品id")), {}).get("仕入れ値", 0)) for s in month_sales)
+    revenue = sum(safe_int(s.get("実売価格")) for s in month_sales)
+    def _norm_id(v):
+        try:
+            return str(int(float(str(v))))
+        except (ValueError, TypeError):
+            return str(v)
+    inv_map = {_norm_id(i["id"]): i for i in inventory}
+    costs = sum(safe_int(inv_map.get(_norm_id(s.get("商品id")), {}).get("仕入れ値")) for s in month_sales)
     profit = revenue - costs
 
     c1, c2, c3, c4 = st.columns(4)
