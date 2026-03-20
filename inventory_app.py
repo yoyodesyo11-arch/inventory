@@ -11,6 +11,8 @@ RETURNS_HEADERS = ["id","販売id","商品名","返品日","メモ"]
 
 STATUS_ICON = {"在庫中": "🟢", "販売済": "⚫", "返品": "🟠"}
 
+STATUS_VALUES = {"在庫中", "販売済", "返品"}
+
 @st.cache_data(ttl=300)
 def gas_get(sheet):
     try:
@@ -18,7 +20,14 @@ def gas_get(sheet):
         data = r.json()
         if len(data) <= 1:
             return []
-        return [dict(zip(data[0], row)) for row in data[1:]]
+        rows = [dict(zip(data[0], row)) for row in data[1:]]
+        # 仕入れ日が空で登録された行は状態が1列左にズレる → 自動補正
+        if sheet == "inventory":
+            for row in rows:
+                if row.get("状態") not in STATUS_VALUES and str(row.get("仕入れ日", "")) in STATUS_VALUES:
+                    row["状態"] = row["仕入れ日"]
+                    row["仕入れ日"] = ""
+        return rows
     except Exception as e:
         st.error(f"データ取得エラー: {e}")
         return []
