@@ -146,10 +146,17 @@ if menu == "📊 ダッシュボード":
 
     inventory = gas_get("inventory")
     sales = gas_get("sales")
+    returns = gas_get("returns")
 
     active = [i for i in inventory if eff_status(i) == "在庫中"]
     this_month = datetime.now().strftime("%Y-%m")
-    month_sales = [s for s in sales if str(s.get("販売日", "")).startswith(this_month)]
+
+    # 返品済みの販売IDを除外
+    returned_sale_ids = {str(r.get("販売id")) for r in returns}
+    month_sales = [s for s in sales
+                   if str(s.get("販売日", "")).startswith(this_month)
+                   and str(s.get("id")) not in returned_sale_ids]
+
     revenue = sum(int(s.get("実売価格", 0)) for s in month_sales)
     inv_map = {str(i["id"]): i for i in inventory}
     costs = sum(int(inv_map.get(str(s.get("商品id")), {}).get("仕入れ値", 0)) for s in month_sales)
