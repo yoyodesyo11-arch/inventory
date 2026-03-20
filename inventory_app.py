@@ -13,6 +13,18 @@ STATUS_ICON = {"在庫中": "🟢", "販売済": "⚫", "返品": "🟠"}
 
 STATUS_VALUES = {"在庫中", "販売済", "返品"}
 
+def norm_id(item):
+    """IDを文字列に正規化（1.0 → "1"）"""
+    try:
+        return str(int(float(str(item.get("id", "")))))
+    except (ValueError, TypeError):
+        return str(item.get("id", ""))
+
+def eff_status(item):
+    """status_ovを考慮した実効ステータスを返す"""
+    ov = st.session_state.get("status_ov", {})
+    return ov.get(norm_id(item), item.get("状態", "在庫中"))
+
 @st.cache_data(ttl=300)
 def gas_get(sheet):
     try:
@@ -218,8 +230,7 @@ elif menu == "💰 販売記録":
     st.title("💰 販売記録")
 
     inventory = gas_get("inventory")
-    ov = st.session_state.get("status_ov", {})
-    active = [i for i in inventory if ov.get(str(i["id"]), i.get("状態")) == "在庫中"]
+    active = [i for i in inventory if eff_status(i) == "在庫中"]
 
     if not active:
         st.info("在庫中の商品がありません")
@@ -271,7 +282,7 @@ elif menu == "💰 販売記録":
                         # 2. 在庫ステータスを「販売済」に更新
                         ok2 = update_inventory_status(inventory, item["id"], "販売済")
                         if ok2:
-                            st.session_state.setdefault("status_ov", {})[str(item["id"])] = "販売済"
+                            st.session_state.setdefault("status_ov", {})[norm_id(item)] = "販売済"
                             st.success(f"✅ **{item['商品名']}** を販売記録しました！")
                             st.rerun()
                         else:
@@ -288,9 +299,9 @@ elif menu == "📦 在庫一覧・編集":
     else:
         # サマリー
         cnt_all = len(inventory)
-        cnt_active = sum(1 for i in inventory if i.get("状態") == "在庫中")
-        cnt_sold = sum(1 for i in inventory if i.get("状態") == "販売済")
-        cnt_return = sum(1 for i in inventory if i.get("状態") == "返品")
+        cnt_active = sum(1 for i in inventory if eff_status(i) == "在庫中")
+        cnt_sold = sum(1 for i in inventory if eff_status(i) == "販売済")
+        cnt_return = sum(1 for i in inventory if eff_status(i) == "返品")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("全商品", cnt_all)
         c2.metric("🟢 在庫中", cnt_active)
@@ -303,14 +314,13 @@ elif menu == "📦 在庫一覧・編集":
         filter_status = st.radio("表示", ["すべて", "在庫中", "販売済", "返品"], horizontal=True)
         keyword = st.text_input("🔍 検索（商品名・ブランド・カテゴリ）")
 
-        filtered = [i for i in inventory if filter_status == "すべて" or i.get("状態") == filter_status]
+        filtered = [i for i in inventory if filter_status == "すべて" or eff_status(i) == filter_status]
         filtered = search_filter(filtered, keyword, ["商品名", "ブランド", "カテゴリ"])
         st.caption(f"{len(filtered)} 件表示")
 
-        ov = st.session_state.get("status_ov", {})
         for idx, item in enumerate(filtered):
             real_idx = inventory.index(item)
-            status = ov.get(str(item.get("id")), item.get("状態", "在庫中"))
+            status = eff_status(item)
             icon = STATUS_ICON.get(status, "")
 
             with st.expander(f"{icon} **{item.get('商品名')}**  /  {item.get('ブランド', '—')}  /  {item.get('サイズ', '—')}  /  ¥{int(item.get('販売予定価格', 0)):,}"):
@@ -344,15 +354,15 @@ elif menu == "📦 在庫一覧・編集":
                 st.write("**状態を変更**")
                 col1, col2, col3 = st.columns(3)
                 if col1.button("🟢 在庫中", key=f"s1_{idx}", type="primary" if status == "在庫中" else "secondary"):
-                    st.session_state.setdefault("status_ov", {})[str(item["id"])] = "在庫中"
+                    st.session_state.setdefault("status_ov", {})[norm_id(item)] = "在庫中"
                     gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "在庫中"])
                     st.rerun()
                 if col2.button("⚫ 販売済", key=f"s2_{idx}", type="primary" if status == "販売済" else "secondary"):
-                    st.session_state.setdefault("status_ov", {})[str(item["id"])] = "販売済"
+                    st.session_state.setdefault("status_ov", {})[norm_id(item)] = "販売済"
                     gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "販売済"])
                     st.rerun()
                 if col3.button("🟠 返品", key=f"s3_{idx}", type="primary" if status == "返品" else "secondary"):
-                    st.session_state.setdefault("status_ov", {})[str(item["id"])] = "返品"
+                    st.session_state.setdefault("status_ov", {})[norm_id(item)] = "返品"
                     gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "返品"])
                     st.rerun()
 
@@ -386,7 +396,7 @@ elif menu == "↩️ 販売取消・返品":
                 inventory = gas_get("inventory")
                 ok = update_inventory_status(inventory, item.get("商品id"), "在庫中")
                 if ok:
-                    st.session_state.setdefault("status_ov", {})[str(item.get("商品id"))] = "在庫中"
+                    st.session_state.setdefault("status_ov", {})[str(int(float(str(item.get("商品id", 0)))))] = "在庫中"
                     st.success("✅ 返品処理しました！在庫に戻しました。")
                 else:
                     st.warning("⚠️ 返品記録は保存しましたが、在庫ステータスの更新に失敗しました。在庫一覧から手動で「在庫中」に変更してください。")
