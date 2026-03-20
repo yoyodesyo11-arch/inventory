@@ -13,6 +13,12 @@ STATUS_ICON = {"在庫中": "🟢", "販売済": "⚫", "返品": "🟠"}
 
 STATUS_VALUES = {"在庫中", "販売済", "返品"}
 
+def safe_int(val, default=0):
+    try:
+        return int(float(str(val))) if val not in (None, "", " ") else default
+    except (ValueError, TypeError):
+        return default
+
 def norm_id(item):
     """IDを文字列に正規化（1.0 → "1"）"""
     try:
@@ -38,10 +44,12 @@ def gas_get(sheet):
         data = r.json()
         if not data:
             return []
-        # 1行目がヘッダーか確認。違う場合は既定のヘッダーを使う
+        # 既定ヘッダーがあるシートは常にそれを使う
+        # 1行目が文字列（ヘッダー行）なら読み飛ばす
         expected = SHEET_HEADERS.get(sheet, [])
-        if expected and data[0] != expected:
-            rows = [dict(zip(expected, row)) for row in data]
+        if expected:
+            start = 1 if data and isinstance(data[0][0], str) else 0
+            rows = [dict(zip(expected, row)) for row in data[start:]]
         elif len(data) <= 1:
             return []
         else:
@@ -276,7 +284,7 @@ elif menu == "💰 販売記録":
             pc1, pc2, pc3, pc4 = st.columns(4)
             pc1.info(f"**カテゴリ**\n\n{item.get('カテゴリ', '—')}")
             pc2.info(f"**サイズ**\n\n{item.get('サイズ', '—')}")
-            pc3.info(f"**仕入れ値**\n\n¥{int(item.get('仕入れ値', 0)):,}")
+            pc3.info(f"**仕入れ値**\n\n¥{safe_int(item.get('仕入れ値')):,}")
             pc4.info(f"**保管場所**\n\n{item.get('保管場所', '—')}")
             if item.get("メモ"):
                 st.caption(f"メモ: {item.get('メモ')}")
@@ -284,10 +292,10 @@ elif menu == "💰 販売記録":
 
             with st.form("sell", clear_on_submit=True):
                 col1, col2 = st.columns(2)
-                price = col1.number_input("実売価格 (¥)", min_value=0, value=int(item.get("販売予定価格", 0)), step=100)
+                price = col1.number_input("実売価格 (¥)", min_value=0, value=safe_int(item.get("販売予定価格")), step=100)
                 date = col2.date_input("販売日", value=datetime.now())
 
-                profit_preview = price - int(item.get("仕入れ値", 0))
+                profit_preview = price - safe_int(item.get("仕入れ値"))
                 if profit_preview >= 0:
                     st.success(f"💹 見込み利益: **¥{profit_preview:,}**")
                 else:
@@ -346,7 +354,7 @@ elif menu == "📦 在庫一覧・編集":
             status = eff_status(item)
             icon = STATUS_ICON.get(status, "")
 
-            with st.expander(f"{icon} **{item.get('商品名')}**  /  {item.get('ブランド', '—')}  /  {item.get('サイズ', '—')}  /  ¥{int(item.get('販売予定価格', 0)):,}"):
+            with st.expander(f"{icon} **{item.get('商品名')}**  /  {item.get('ブランド', '—')}  /  {item.get('サイズ', '—')}  /  ¥{safe_int(item.get('販売予定価格')):,}"):
                 with st.form(f"edit_{idx}"):
                     c1, c2, c3 = st.columns(3)
                     name = c1.text_input("商品名", value=str(item.get("商品名", "")))
@@ -354,8 +362,8 @@ elif menu == "📦 在庫一覧・編集":
                     category = c3.text_input("カテゴリ", value=str(item.get("カテゴリ", "")))
                     c4, c5, c6 = st.columns(3)
                     size = c4.text_input("サイズ", value=str(item.get("サイズ", "")))
-                    buy_price = c5.number_input("仕入れ値", value=int(item.get("仕入れ値", 0)), step=100)
-                    sell_price = c6.number_input("販売予定価格", value=int(item.get("販売予定価格", 0)), step=100)
+                    buy_price = c5.number_input("仕入れ値", value=safe_int(item.get("仕入れ値")), step=100)
+                    sell_price = c6.number_input("販売予定価格", value=safe_int(item.get("販売予定価格")), step=100)
                     c7, c8 = st.columns(2)
                     try:
                         bd = datetime.strptime(str(item.get("仕入れ日", ""))[:10], "%Y-%m-%d").date()
@@ -394,7 +402,7 @@ elif menu == "📦 在庫一覧・編集":
                 if st.session_state.get("sell_form_idx") == idx:
                     with st.form(key=f"sell_form_{idx}"):
                         fc1, fc2 = st.columns(2)
-                        sell_price_input = fc1.number_input("💰 実売価格 (¥)", min_value=0, value=int(item.get("販売予定価格", 0)), step=100)
+                        sell_price_input = fc1.number_input("💰 実売価格 (¥)", min_value=0, value=safe_int(item.get("販売予定価格")), step=100)
                         sell_date_input = fc2.date_input("📅 販売日", value=datetime.now())
                         sell_memo = st.text_input("メモ（任意）")
                         if st.form_submit_button("✅ 販売記録", type="primary", use_container_width=True):
@@ -419,13 +427,13 @@ elif menu == "↩️ 販売取消・返品":
         st.info("対象データがありません")
     else:
         options = {
-            f"{s['商品名']}  /  {s.get('販売日', '')}  /  ¥{int(s.get('実売価格', 0)):,}": s
+            f"{s['商品名']}  /  {s.get('販売日', '')}  /  ¥{safe_int(s.get('実売価格')):,}": s
             for s in filtered_sales
         }
         selected = st.selectbox("返品する販売記録を選択", list(options.keys()))
         item = options[selected]
 
-        st.info(f"**{item['商品名']}** / {item.get('ブランド', '')} / 販売日: {item.get('販売日', '')} / ¥{int(item.get('実売価格', 0)):,}")
+        st.info(f"**{item['商品名']}** / {item.get('ブランド', '')} / 販売日: {item.get('販売日', '')} / ¥{safe_int(item.get('実売価格')):,}")
 
         with st.form("return"):
             memo = st.text_area("返品メモ", placeholder="返品理由など")
