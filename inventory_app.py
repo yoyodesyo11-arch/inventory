@@ -314,7 +314,7 @@ elif menu == "📦 在庫一覧・編集":
         st.divider()
 
         # フィルター
-        filter_status = st.radio("表示", ["すべて", "在庫中", "販売済", "返品"], horizontal=True)
+        filter_status = st.radio("表示", ["すべて", "在庫中", "販売済", "返品"], index=1, horizontal=True)
         keyword = st.text_input("🔍 検索（商品名・ブランド・カテゴリ）")
 
         filtered = [i for i in inventory if filter_status == "すべて" or eff_status(i) == filter_status]
