@@ -139,6 +139,7 @@ with st.sidebar:
 # ── ダッシュボード ────────────────────────────────────────────────────
 if menu == "📊 ダッシュボード":
     st.title("📊 ダッシュボード")
+    st.cache_data.clear()
 
     with st.spinner("データ読み込み中..."):
         inventory = gas_get("inventory")
