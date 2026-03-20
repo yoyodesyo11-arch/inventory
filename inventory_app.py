@@ -144,7 +144,7 @@ if menu == "📊 ダッシュボード":
         inventory = gas_get("inventory")
         sales = gas_get("sales")
 
-    active = [i for i in inventory if i.get("状態") == "在庫中"]
+    active = [i for i in inventory if eff_status(i) == "在庫中"]
     this_month = datetime.now().strftime("%Y-%m")
     month_sales = [s for s in sales if str(s.get("販売日", "")).startswith(this_month)]
     revenue = sum(int(s.get("実売価格", 0)) for s in month_sales)
