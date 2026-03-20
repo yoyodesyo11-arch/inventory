@@ -21,12 +21,19 @@ def gas_get(sheet):
         if len(data) <= 1:
             return []
         rows = [dict(zip(data[0], row)) for row in data[1:]]
-        # 仕入れ日が空で登録された行は状態が1列左にズレる → 自動補正
+        # 状態列のズレ・欠損を補正
         if sheet == "inventory":
             for row in rows:
-                if row.get("状態") not in STATUS_VALUES and str(row.get("仕入れ日", "")) in STATUS_VALUES:
-                    row["状態"] = row["仕入れ日"]
-                    row["仕入れ日"] = ""
+                status = str(row.get("状態", ""))
+                buy_date = str(row.get("仕入れ日", ""))
+                if status not in STATUS_VALUES:
+                    if buy_date in STATUS_VALUES:
+                        # 状態が仕入れ日列にズレている → 修正
+                        row["状態"] = buy_date
+                        row["仕入れ日"] = ""
+                    else:
+                        # 状態が完全に欠損 → デフォルト在庫中
+                        row["状態"] = "在庫中"
         return rows
     except Exception as e:
         st.error(f"データ取得エラー: {e}")
