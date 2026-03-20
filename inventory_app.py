@@ -25,14 +25,27 @@ def eff_status(item):
     ov = st.session_state.get("status_ov", {})
     return ov.get(norm_id(item), item.get("状態", "在庫中"))
 
+SHEET_HEADERS = {
+    "inventory": INVENTORY_HEADERS,
+    "sales": SALES_HEADERS,
+    "returns": RETURNS_HEADERS,
+}
+
 @st.cache_data(ttl=600)
 def gas_get(sheet):
     try:
         r = requests.get(GAS_URL, params={"action": "get", "sheet": sheet}, timeout=15)
         data = r.json()
-        if len(data) <= 1:
+        if not data:
             return []
-        rows = [dict(zip(data[0], row)) for row in data[1:]]
+        # 1行目がヘッダーか確認。違う場合は既定のヘッダーを使う
+        expected = SHEET_HEADERS.get(sheet, [])
+        if expected and data[0] != expected:
+            rows = [dict(zip(expected, row)) for row in data]
+        elif len(data) <= 1:
+            return []
+        else:
+            rows = [dict(zip(data[0], row)) for row in data[1:]]
         # 状態列のズレ・欠損を補正
         if sheet == "inventory":
             for row in rows:
