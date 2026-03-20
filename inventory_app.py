@@ -25,7 +25,7 @@ def eff_status(item):
     ov = st.session_state.get("status_ov", {})
     return ov.get(norm_id(item), item.get("状態", "在庫中"))
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def gas_get(sheet):
     try:
         r = requests.get(GAS_URL, params={"action": "get", "sheet": sheet}, timeout=15)
@@ -138,12 +138,14 @@ with st.sidebar:
 
 # ── ダッシュボード ────────────────────────────────────────────────────
 if menu == "📊 ダッシュボード":
-    st.title("📊 ダッシュボード")
-    st.cache_data.clear()
+    col_title, col_btn = st.columns([4, 1])
+    col_title.title("📊 ダッシュボード")
+    if col_btn.button("🔄 更新", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-    with st.spinner("データ読み込み中..."):
-        inventory = gas_get("inventory")
-        sales = gas_get("sales")
+    inventory = gas_get("inventory")
+    sales = gas_get("sales")
 
     active = [i for i in inventory if eff_status(i) == "在庫中"]
     this_month = datetime.now().strftime("%Y-%m")
@@ -371,12 +373,11 @@ elif menu == "📦 在庫一覧・編集":
                 # 販売済ボタン押下後に価格入力フォームを表示
                 if st.session_state.get("sell_form_idx") == idx:
                     with st.form(key=f"sell_form_{idx}"):
-                        st.markdown("**💰 販売情報を入力**")
                         fc1, fc2 = st.columns(2)
-                        sell_price_input = fc1.number_input("実売価格 (¥)", min_value=0, value=int(item.get("販売予定価格", 0)), step=100)
-                        sell_date_input = fc2.date_input("販売日", value=datetime.now())
+                        sell_price_input = fc1.number_input("💰 実売価格 (¥)", min_value=0, value=int(item.get("販売予定価格", 0)), step=100)
+                        sell_date_input = fc2.date_input("📅 販売日", value=datetime.now())
                         sell_memo = st.text_input("メモ（任意）")
-                        if st.form_submit_button("✅ 販売記録して販売済みにする", type="primary", use_container_width=True):
+                        if st.form_submit_button("✅ 販売記録", type="primary", use_container_width=True):
                             sales = gas_get("sales")
                             new_sid = str(int(max([int(s.get("id", 0)) for s in sales], default=0)) + 1)
                             ok1 = gas_append("sales", [new_sid, item["id"], item.get("商品名"), item.get("ブランド"), sell_price_input, str(sell_date_input), sell_memo])
