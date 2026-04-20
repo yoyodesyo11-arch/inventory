@@ -1,491 +1,480 @@
+
+import os
+import re
+import sqlite3
+from datetime import date, datetime
+from typing import Optional
+
+import pandas as pd
 import streamlit as st
-import requests
-from datetime import datetime
-import csv, io
-from collections import Counter
 
-GAS_URL = "https://script.google.com/macros/s/AKfycbzvGHwizg3fNi8Rae1_hUp9Nzoxc3U24iv8FpuivdWFf2lVqyId1JOzgHne--1A97oX/exec"
-INVENTORY_HEADERS = ["id","商品名","ブランド","カテゴリ","サイズ","仕入れ値","販売予定価格","保管場所","メモ","登録日","仕入れ日","状態"]
-SALES_HEADERS = ["id","商品id","商品名","ブランド","実売価格","販売日","メモ"]
-RETURNS_HEADERS = ["id","販売id","商品名","返品日","メモ"]
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(APP_DIR, "inventory.db")
+IMG_DIR = os.path.join(APP_DIR, "images")
+os.makedirs(IMG_DIR, exist_ok=True)
 
-STATUS_ICON = {"在庫中": "🟢", "販売済": "⚫", "返品": "🟠"}
+st.set_page_config(page_title="Vintage Inventory Pro", layout="wide")
 
-STATUS_VALUES = {"在庫中", "販売済", "返品"}
 
-def safe_int(val, default=0):
-    try:
-        return int(float(str(val))) if val not in (None, "", " ") else default
-    except (ValueError, TypeError):
-        return default
+def get_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-def norm_id(item):
-    """IDを文字列に正規化（1.0 → "1"）"""
-    try:
-        return str(int(float(str(item.get("id", "")))))
-    except (ValueError, TypeError):
-        return str(item.get("id", ""))
 
-def eff_status(item):
-    """status_ovを考慮した実効ステータスを返す"""
-    ov = st.session_state.get("status_ov", {})
-    return ov.get(norm_id(item), item.get("状態", "在庫中"))
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_code TEXT,
+            name TEXT NOT NULL,
+            brand TEXT,
+            category TEXT,
+            size TEXT,
+            cost REAL DEFAULT 0,
+            list_price REAL DEFAULT 0,
+            actual_sale_price REAL,
+            expected_profit REAL,
+            actual_profit REAL,
+            location TEXT,
+            notes TEXT,
+            image_path TEXT,
+            status TEXT DEFAULT '在庫中',
+            created_at TEXT,
+            sold_date TEXT,
+            sold_channel TEXT,
+            return_flag INTEGER DEFAULT 0
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
 
-SHEET_HEADERS = {
-    "inventory": INVENTORY_HEADERS,
-    "sales": SALES_HEADERS,
-    "returns": RETURNS_HEADERS,
-}
 
-@st.cache_data(ttl=600)
-def gas_get(sheet):
-    try:
-        r = requests.get(GAS_URL, params={"action": "get", "sheet": sheet}, timeout=15)
-        data = r.json()
-        if not data:
-            return []
-        # 既定ヘッダーがあるシートは常にそれを使う
-        # 1行目が文字列（ヘッダー行）なら読み飛ばす
-        expected = SHEET_HEADERS.get(sheet, [])
-        if expected:
-            start = 1 if data and isinstance(data[0][0], str) else 0
-            rows = [dict(zip(expected, row)) for row in data[start:]]
-        elif len(data) <= 1:
-            return []
-        else:
-            rows = [dict(zip(data[0], row)) for row in data[1:]]
-        # 状態列のズレ・欠損を補正
-        if sheet == "inventory":
-            for row in rows:
-                status = str(row.get("状態", ""))
-                buy_date = str(row.get("仕入れ日", ""))
-                if status not in STATUS_VALUES:
-                    if buy_date in STATUS_VALUES:
-                        # 状態が仕入れ日列にズレている → 修正
-                        row["状態"] = buy_date
-                        row["仕入れ日"] = ""
-                    else:
-                        # 状態が完全に欠損 → デフォルト在庫中
-                        row["状態"] = "在庫中"
-        return rows
-    except Exception as e:
-        st.error(f"データ取得エラー: {e}")
-        return []
+def safe_filename(name: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip())
+    return cleaned[:60] or "item"
 
-def gas_append(sheet, row):
-    try:
-        r = requests.post(GAS_URL, json={"action": "append", "sheet": sheet, "row": row}, timeout=15)
-        st.cache_data.clear()
+
+def next_item_code(conn) -> str:
+    yy_mm = datetime.now().strftime("%y%m")
+    prefix = f"NM-{yy_mm}-"
+    cur = conn.cursor()
+    cur.execute("SELECT item_code FROM inventory WHERE item_code LIKE ? ORDER BY id DESC LIMIT 1", (prefix + "%",))
+    row = cur.fetchone()
+    if not row or not row[0]:
+        num = 1
+    else:
         try:
-            resp = r.json()
-            if isinstance(resp, dict) and resp.get("status") == "ok":
-                return True
-            st.error(f"GAS保存エラー: {resp}")
-            return False
+            num = int(str(row[0]).split("-")[-1]) + 1
         except Exception:
-            st.error(f"GASレスポンス異常(append): {r.text[:300]}")
-            return False
-    except Exception as e:
-        st.error(f"保存エラー: {e}")
-        return False
+            num = 1
+    return f"{prefix}{num:03d}"
 
-def gas_update(sheet, row_index, row):
-    try:
-        r = requests.post(GAS_URL, json={"action": "update", "sheet": sheet, "row_index": row_index + 1, "row": row}, timeout=15)
-        st.cache_data.clear()
+
+def save_uploaded_image(uploaded_file, item_code: str) -> Optional[str]:
+    if uploaded_file is None:
+        return None
+    ext = os.path.splitext(uploaded_file.name)[1].lower() or ".jpg"
+    filename = f"{safe_filename(item_code)}{ext}"
+    path = os.path.join(IMG_DIR, filename)
+    with open(path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return path
+
+
+def load_df() -> pd.DataFrame:
+    conn = get_conn()
+    df = pd.read_sql_query("SELECT * FROM inventory ORDER BY id DESC", conn)
+    conn.close()
+    if df.empty:
+        return df
+    for col in ["cost", "list_price", "actual_sale_price", "expected_profit", "actual_profit"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "created_at" in df.columns:
+        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True).dt.tz_convert(None)
+    if "sold_date" in df.columns:
+        df["sold_date"] = pd.to_datetime(df["sold_date"], errors="coerce", utc=True).dt.tz_convert(None)
+    if "created_at" in df.columns and "sold_date" in df.columns:
+        df["rotation_days"] = (df["sold_date"] - df["created_at"]).dt.days
+    else:
+        df["rotation_days"] = None
+    today = pd.Timestamp.today().normalize()
+    if "created_at" in df.columns:
+        df["stock_days"] = (today - df["created_at"].dt.normalize()).dt.days
+    else:
+        df["stock_days"] = None
+    return df
+
+
+def update_expected_profit(conn, item_id: int):
+    cur = conn.cursor()
+    cur.execute("SELECT cost, list_price FROM inventory WHERE id=?", (item_id,))
+    row = cur.fetchone()
+    if row:
+        cost = float(row[0] or 0)
+        list_price = float(row[1] or 0)
+        expected_profit = list_price - cost
+        cur.execute("UPDATE inventory SET expected_profit=? WHERE id=?", (expected_profit, item_id))
+        conn.commit()
+
+
+def add_item(data, uploaded_file):
+    conn = get_conn()
+    item_code = next_item_code(conn)
+    img_path = save_uploaded_image(uploaded_file, item_code)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO inventory (
+            item_code, name, brand, category, size, cost, list_price,
+            expected_profit, location, notes, image_path, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '在庫中', ?)
+        """,
+        (
+            item_code,
+            data["name"],
+            data["brand"],
+            data["category"],
+            data["size"],
+            data["cost"],
+            data["list_price"],
+            float(data["list_price"] or 0) - float(data["cost"] or 0),
+            data["location"],
+            data["notes"],
+            img_path,
+            datetime.now().strftime("%Y-%m-%d"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_sale(item_id: int, sold_date: str, channel: str, sale_price: float):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT cost FROM inventory WHERE id=?", (item_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False
+    cost = float(row[0] or 0)
+    actual_profit = float(sale_price or 0) - cost
+    cur.execute(
+        """
+        UPDATE inventory
+        SET status='販売済み', sold_date=?, sold_channel=?, actual_sale_price=?, actual_profit=?, return_flag=0
+        WHERE id=?
+        """,
+        (sold_date, channel, sale_price, actual_profit, item_id),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def undo_sale(item_id: int, mark_return: bool = False):
+    conn = get_conn()
+    cur = conn.cursor()
+    new_status = '返品' if mark_return else '在庫中'
+    return_flag = 1 if mark_return else 0
+    cur.execute(
+        """
+        UPDATE inventory
+        SET status=?, sold_date=NULL, sold_channel=NULL, actual_sale_price=NULL,
+            actual_profit=NULL, return_flag=?
+        WHERE id=?
+        """,
+        (new_status, return_flag, item_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_item(item_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT image_path FROM inventory WHERE id=?", (item_id,))
+    row = cur.fetchone()
+    if row and row[0] and os.path.exists(row[0]):
         try:
-            resp = r.json()
-            if isinstance(resp, dict) and resp.get("status") == "ok":
-                return True
-            st.error(f"GAS更新エラー: {resp}")
-            return False
-        except Exception:
-            st.error(f"GASレスポンス異常(update): {r.text[:300]}")
-            return False
-    except Exception as e:
-        st.error(f"更新エラー: {e}")
-        return False
+            os.remove(row[0])
+        except OSError:
+            pass
+    cur.execute("DELETE FROM inventory WHERE id=?", (item_id,))
+    conn.commit()
+    conn.close()
 
-def search_filter(items, keyword, keys):
-    if not keyword:
-        return items
-    kw = keyword.lower()
-    return [i for i in items if any(kw in str(i.get(k, "")).lower() for k in keys)]
 
-def update_inventory_status(inventory, item_id, status):
-    """在庫のステータスを更新する共通関数"""
-    # IDをint文字列に正規化して比較（1.0 / "1" / 1 すべて一致させる）
-    def _norm(v):
-        try:
-            return str(int(float(str(v))))
-        except (ValueError, TypeError):
-            return str(v)
-    real_idx = next((i for i, v in enumerate(inventory) if _norm(v["id"]) == _norm(item_id)), None)
-    if real_idx is None:
-        st.error("対象の商品が見つかりませんでした")
-        return False
-    row = inventory[real_idx]
-    return gas_update("inventory", real_idx, [
-        row["id"], row["商品名"], row["ブランド"], row["カテゴリ"],
-        row["サイズ"], row["仕入れ値"], row["販売予定価格"], row["保管場所"],
-        row["メモ"], row["登録日"], row.get("仕入れ日", ""), status
-    ])
+def update_item(item_id: int, values: dict, uploaded_file):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT item_code, image_path FROM inventory WHERE id=?", (item_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return
+    item_code = row[0]
+    image_path = row[1]
+    new_image_path = image_path
+    if uploaded_file is not None:
+        new_image_path = save_uploaded_image(uploaded_file, item_code)
+    cur.execute(
+        """
+        UPDATE inventory
+        SET name=?, brand=?, category=?, size=?, cost=?, list_price=?,
+            expected_profit=?, location=?, notes=?, image_path=?
+        WHERE id=?
+        """,
+        (
+            values["name"], values["brand"], values["category"], values["size"],
+            values["cost"], values["list_price"], float(values["list_price"] or 0) - float(values["cost"] or 0),
+            values["location"], values["notes"], new_image_path, item_id
+        )
+    )
+    conn.commit()
+    conn.close()
 
-# ── ページ設定 ────────────────────────────────────────────────────────
-st.set_page_config(page_title="古着屋在庫管理", layout="wide", page_icon="👕")
 
-st.markdown("""
-<style>
-div[data-testid="metric-container"] {
-    background: #f8f9fa;
-    border: 1px solid #e0e0e0;
-    padding: 16px;
-    border-radius: 10px;
-}
-div[data-testid="stExpander"] {
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    margin-bottom: 6px;
-}
-</style>
-""", unsafe_allow_html=True)
+def render_thumb(path: Optional[str]):
+    if path and os.path.exists(path):
+        st.image(path, width=90)
+    else:
+        st.caption("画像なし")
 
-# ── サイドバー ────────────────────────────────────────────────────────
+
+init_db()
+st.title("古着屋 在庫管理アプリ 完全版")
+st.caption("商品画像つき / 販売記録 / 販売取消 / 商品編集 / 回転率 / 売れ残りチェック")
+
 with st.sidebar:
-    st.markdown("## 👕 古着屋 在庫管理")
-    st.divider()
-    menu = st.radio("メニュー", [
-        "📊 ダッシュボード",
-        "➕ 商品登録",
-        "💰 販売記録",
-        "📦 在庫一覧・編集",
-        "↩️ 販売取消・返品",
-        "📥 CSV出力",
-    ], label_visibility="collapsed")
+    st.header("メニュー")
+    page = st.radio(
+        "画面を選択",
+        ["ダッシュボード", "商品登録", "販売記録", "在庫一覧・編集", "販売取消・返品", "CSV出力"],
+    )
 
-# ── ダッシュボード ────────────────────────────────────────────────────
-if menu == "📊 ダッシュボード":
-    col_title, col_btn = st.columns([4, 1])
-    col_title.title("📊 ダッシュボード")
-    if col_btn.button("🔄 更新", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
 
-    inventory = gas_get("inventory")
-    sales = gas_get("sales")
-    returns = gas_get("returns")
+df = load_df()
 
-    active = [i for i in inventory if eff_status(i) == "在庫中"]
-    this_month = datetime.now().strftime("%Y-%m")
-
-    # 返品済みの販売IDを除外
-    returned_sale_ids = {str(r.get("販売id")) for r in returns}
-    month_sales = [s for s in sales
-                   if str(s.get("販売日", "")).startswith(this_month)
-                   and str(s.get("id")) not in returned_sale_ids]
-
-    revenue = sum(safe_int(s.get("実売価格")) for s in month_sales)
-    def _norm_id(v):
-        try:
-            return str(int(float(str(v))))
-        except (ValueError, TypeError):
-            return str(v)
-    inv_map = {_norm_id(i["id"]): i for i in inventory}
-    costs = sum(safe_int(inv_map.get(_norm_id(s.get("商品id")), {}).get("仕入れ値")) for s in month_sales)
-    profit = revenue - costs
+if page == "ダッシュボード":
+    current_month = datetime.now().strftime("%Y-%m")
+    sold_df = df[df["status"] == "販売済み"].copy() if not df.empty else pd.DataFrame()
+    month_df = sold_df[sold_df["sold_date"].dt.strftime("%Y-%m") == current_month] if not sold_df.empty else pd.DataFrame()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("📦 在庫数", f"{len(active)} 点")
-    c2.metric("💰 今月売上", f"¥{revenue:,}")
-    c3.metric("📈 今月利益", f"¥{profit:,}")
-    c4.metric("🛍️ 今月販売", f"{len(month_sales)} 点")
+    c1.metric("在庫数", int((df["status"] == "在庫中").sum()) if not df.empty else 0)
+    c2.metric("今月売上", f"¥{int(month_df['actual_sale_price'].fillna(0).sum()):,}" if not month_df.empty else "¥0")
+    c3.metric("今月利益", f"¥{int(month_df['actual_profit'].fillna(0).sum()):,}" if not month_df.empty else "¥0")
+    c4.metric("今月販売点数", int(len(month_df)))
 
-    col_left, col_right = st.columns(2)
+    st.subheader("売れたブランドランキング（今月）")
+    if not month_df.empty:
+        rank = month_df.groupby("brand", dropna=False).size().reset_index(name="販売点数").sort_values("販売点数", ascending=False)
+        rank["brand"] = rank["brand"].fillna("未入力")
+        st.dataframe(rank, width='stretch')
+    else:
+        st.info("今月の販売データがまだありません。")
 
-    with col_left:
-        st.subheader("🏆 今月ブランドランキング")
-        if month_sales:
-            medals = ["🥇", "🥈", "🥉", "4位", "5位"]
-            for rank, (brand, cnt) in enumerate(Counter(s.get("ブランド", "不明") for s in month_sales).most_common(5)):
-                st.write(f"{medals[rank]}  **{brand}** — {cnt} 点")
+    st.subheader("売れ残りアラート")
+    if not df.empty:
+        in_stock = df[df["status"] == "在庫中"].copy()
+        alert = in_stock[in_stock["stock_days"].fillna(0) >= 30][["item_code", "name", "brand", "category", "stock_days", "location"]].sort_values("stock_days", ascending=False)
+        if alert.empty:
+            st.success("30日以上売れていない在庫はありません。")
         else:
-            st.info("今月の販売データがありません")
+            st.dataframe(alert, width='stretch')
+    else:
+        st.info("在庫データがまだありません。")
 
-    with col_right:
-        st.subheader("⚠️ 売れ残りアラート（30日以上）")
-        today = datetime.now().date()
-        alerts = []
-        for i in active:
-            try:
-                reg = datetime.strptime(str(i.get("仕入れ日", ""))[:10], "%Y-%m-%d").date()
-                days = (today - reg).days
-                if days >= 30:
-                    alerts.append((days, i))
-            except Exception:
-                pass
-        if not alerts:
-            st.success("✅ 売れ残りはありません")
-        else:
-            alerts.sort(reverse=True)
-            for days, i in alerts:
-                st.warning(f"**{i.get('商品名')}** / {i.get('ブランド')} — **{days}日** 経過  |  仕入れ ¥{int(i.get('仕入れ値', 0)):,}")
-
-# ── 商品登録 ──────────────────────────────────────────────────────────
-elif menu == "➕ 商品登録":
-    st.title("➕ 商品を登録")
-
-    with st.form("add", clear_on_submit=True):
-        st.subheader("基本情報")
+elif page == "商品登録":
+    st.subheader("商品を追加")
+    with st.form("add_item_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
-        name = c1.text_input("商品名 *", placeholder="例：リーバイス 501")
-        brand = c2.text_input("ブランド", placeholder="例：Levi's")
-        category = c3.text_input("カテゴリ", placeholder="例：デニム")
-
-        st.subheader("サイズ・価格")
+        name = c1.text_input("商品名 *")
+        brand = c2.text_input("ブランド")
+        category = c3.text_input("カテゴリ")
         c4, c5, c6 = st.columns(3)
-        size = c4.text_input("サイズ", placeholder="例：M / W32L30")
-        buy_price = c5.number_input("仕入れ値 (¥)", min_value=0, step=100)
-        sell_price = c6.number_input("販売予定価格 (¥)", min_value=0, step=100)
-
-        st.subheader("その他")
+        size = c4.text_input("サイズ")
+        cost = c5.number_input("仕入れ値", min_value=0, step=100)
+        list_price = c6.number_input("販売予定価格", min_value=0, step=100)
         c7, c8 = st.columns(2)
-        buy_date = c7.date_input("仕入れ日", value=datetime.now())
-        location = c8.text_input("保管場所 / ラック番号", placeholder="例：ラック A-3")
-        memo = st.text_area("メモ", placeholder="状態・特記事項など")
-
-        if st.form_submit_button("✅ 登録する", use_container_width=True, type="primary"):
-            if not name:
-                st.error("⚠️ 商品名は必須です")
+        location = c7.text_input("保管場所 / ラック番号")
+        notes = c8.text_input("メモ")
+        image = st.file_uploader("商品画像", type=["jpg", "jpeg", "png", "webp"])
+        submitted = st.form_submit_button("登録")
+        if submitted:
+            if not name.strip():
+                st.error("商品名は必須です。")
             else:
-                inventory = gas_get("inventory")
-                new_id = str(int(max([int(i.get("id", 0)) for i in inventory], default=0)) + 1)
-                ok = gas_append("inventory", [
-                    new_id, name, brand, category, size,
-                    buy_price, sell_price, location, memo,
-                    datetime.now().strftime("%Y-%m-%d"), str(buy_date), "在庫中"
-                ])
-                if ok:
-                    st.success(f"✅ **{name}** を登録しました！（ID: {new_id}）")
+                add_item({
+                    "name": name.strip(), "brand": brand.strip(), "category": category.strip(), "size": size.strip(),
+                    "cost": cost, "list_price": list_price, "location": location.strip(), "notes": notes.strip()
+                }, image)
+                st.success("商品を登録しました。左のメニューから在庫一覧で確認できます。")
 
-# ── 販売記録 ──────────────────────────────────────────────────────────
-elif menu == "💰 販売記録":
-    st.title("💰 販売記録")
-
-    inventory = gas_get("inventory")
-    active = [i for i in inventory if eff_status(i) == "在庫中"]
-
-    if not active:
-        st.info("在庫中の商品がありません")
+elif page == "販売記録":
+    st.subheader("販売記録をつける")
+    if df.empty or (df["status"] == "在庫中").sum() == 0:
+        st.info("販売記録をつけられる在庫中の商品がありません。")
     else:
-        keyword = st.text_input("🔍 検索（商品名・ブランド・カテゴリ）", placeholder="検索キーワード")
-        filtered = search_filter(active, keyword, ["商品名", "ブランド", "カテゴリ"])
-
-        if not filtered:
-            st.warning("該当する商品がありません")
+        in_stock = df[df["status"] == "在庫中"].copy()
+        search = st.text_input("販売した商品を検索", placeholder="商品名・ブランド・カテゴリで検索")
+        if search:
+            mask = (
+                in_stock["name"].fillna("").str.contains(search, case=False, na=False)
+                | in_stock["brand"].fillna("").str.contains(search, case=False, na=False)
+                | in_stock["category"].fillna("").str.contains(search, case=False, na=False)
+                | in_stock["item_code"].fillna("").str.contains(search, case=False, na=False)
+            )
+            in_stock = in_stock[mask]
+        if in_stock.empty:
+            st.warning("該当する商品が見つかりません。")
         else:
-            options = {
-                f"{i['商品名']}  ({i.get('ブランド', '—')})  [{i.get('サイズ', '—')}]  ¥{int(i.get('販売予定価格', 0)):,}": i
-                for i in filtered
-            }
-            selected = st.selectbox("商品を選択", list(options.keys()))
-            item = options[selected]
+            in_stock["label"] = in_stock.apply(lambda r: f"{r['item_code']} | {r['brand'] or '-'} | {r['name']} | {r['size'] or '-'}", axis=1)
+            selected_label = st.selectbox("販売した商品", in_stock["label"].tolist())
+            selected_row = in_stock[in_stock["label"] == selected_label].iloc[0]
+            st.write(f"予定価格: ¥{int(selected_row['list_price'] or 0):,} / 仕入れ: ¥{int(selected_row['cost'] or 0):,}")
+            with st.form("sale_form"):
+                c1, c2, c3 = st.columns(3)
+                sold_date = c1.date_input("売れた日", value=date.today())
+                channel = c2.selectbox("販売場所", ["店頭", "メルカリ", "BASE", "eBay", "その他"])
+                sale_price = c3.number_input("実際の販売額", min_value=0, step=100, value=int(selected_row['list_price'] or 0))
+                submitted = st.form_submit_button("販売記録を保存")
+                if submitted:
+                    record_sale(int(selected_row["id"]), sold_date.strftime("%Y-%m-%d"), channel, float(sale_price))
+                    st.success("販売記録を保存しました。商品データにも反映されています。")
 
-            # 商品プレビュー
-            st.markdown("---")
-            pc1, pc2, pc3, pc4 = st.columns(4)
-            pc1.info(f"**カテゴリ**\n\n{item.get('カテゴリ', '—')}")
-            pc2.info(f"**サイズ**\n\n{item.get('サイズ', '—')}")
-            pc3.info(f"**仕入れ値**\n\n¥{safe_int(item.get('仕入れ値')):,}")
-            pc4.info(f"**保管場所**\n\n{item.get('保管場所', '—')}")
-            if item.get("メモ"):
-                st.caption(f"メモ: {item.get('メモ')}")
-            st.markdown("---")
-
-            with st.form("sell", clear_on_submit=True):
-                col1, col2 = st.columns(2)
-                price = col1.number_input("実売価格 (¥)", min_value=0, value=safe_int(item.get("販売予定価格")), step=100)
-                date = col2.date_input("販売日", value=datetime.now())
-
-                profit_preview = price - safe_int(item.get("仕入れ値"))
-                if profit_preview >= 0:
-                    st.success(f"💹 見込み利益: **¥{profit_preview:,}**")
-                else:
-                    st.error(f"⚠️ 見込み損失: **¥{abs(profit_preview):,}**")
-
-                memo = st.text_area("メモ")
-
-                if st.form_submit_button("💰 販売記録する", use_container_width=True, type="primary"):
-                    # 1. 販売記録を追加
-                    sales = gas_get("sales")
-                    new_id = str(int(max([int(s.get("id", 0)) for s in sales], default=0)) + 1)
-                    ok1 = gas_append("sales", [new_id, item["id"], item["商品名"], item["ブランド"], price, str(date), memo])
-
-                    if ok1:
-                        # 2. 在庫ステータスを「販売済」に更新
-                        ok2 = update_inventory_status(inventory, item["id"], "販売済")
-                        if ok2:
-                            st.session_state.setdefault("status_ov", {})[norm_id(item)] = "販売済"
-                            st.success(f"✅ **{item['商品名']}** を販売記録しました！")
-                            st.rerun()
-                        else:
-                            st.error("⚠️ 販売記録は保存しましたが、在庫ステータスの更新に失敗しました。在庫一覧から手動で「販売済」に変更してください。")
-
-# ── 在庫一覧・編集 ────────────────────────────────────────────────────
-elif menu == "📦 在庫一覧・編集":
-    st.title("📦 在庫一覧")
-
-    inventory = gas_get("inventory")
-
-    if not inventory:
-        st.info("まだ商品がありません")
+elif page == "在庫一覧・編集":
+    st.subheader("在庫一覧")
+    if df.empty:
+        st.info("まだ商品がありません。")
     else:
-        # サマリー
-        cnt_all = len(inventory)
-        cnt_active = sum(1 for i in inventory if eff_status(i) == "在庫中")
-        cnt_sold = sum(1 for i in inventory if eff_status(i) == "販売済")
-        cnt_return = sum(1 for i in inventory if eff_status(i) == "返品")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("全商品", cnt_all)
-        c2.metric("🟢 在庫中", cnt_active)
-        c3.metric("⚫ 販売済", cnt_sold)
-        c4.metric("🟠 返品", cnt_return)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        keyword = c1.text_input("キーワード")
+        brand_filter = c2.selectbox("ブランド", ["全部"] + sorted([x for x in df["brand"].dropna().unique().tolist() if x]))
+        size_filter = c3.selectbox("サイズ", ["全部"] + sorted([x for x in df["size"].dropna().unique().tolist() if x]))
+        category_filter = c4.selectbox("カテゴリ", ["全部"] + sorted([x for x in df["category"].dropna().unique().tolist() if x]))
+        status_filter = c5.selectbox("状態", ["全部", "在庫中", "販売済み", "返品"])
+        sort_by = c6.selectbox("並び替え", ["登録順", "ブランド順", "価格順", "利益順", "回転率順"])
 
-        st.divider()
+        filtered = df.copy()
+        if keyword:
+            mask = (
+                filtered["name"].fillna("").str.contains(keyword, case=False, na=False)
+                | filtered["brand"].fillna("").str.contains(keyword, case=False, na=False)
+                | filtered["category"].fillna("").str.contains(keyword, case=False, na=False)
+                | filtered["item_code"].fillna("").str.contains(keyword, case=False, na=False)
+            )
+            filtered = filtered[mask]
+        if brand_filter != "全部":
+            filtered = filtered[filtered["brand"] == brand_filter]
+        if size_filter != "全部":
+            filtered = filtered[filtered["size"] == size_filter]
+        if category_filter != "全部":
+            filtered = filtered[filtered["category"] == category_filter]
+        if status_filter != "全部":
+            filtered = filtered[filtered["status"] == status_filter]
 
-        # フィルター
-        filter_status = st.radio("表示", ["すべて", "在庫中", "販売済", "返品"], index=1, horizontal=True)
-        keyword = st.text_input("🔍 検索（商品名・ブランド・カテゴリ）")
+        if sort_by == "ブランド順":
+            filtered = filtered.sort_values(["brand", "id"], ascending=[True, False], na_position="last")
+        elif sort_by == "価格順":
+            filtered = filtered.sort_values(["list_price", "id"], ascending=[False, False], na_position="last")
+        elif sort_by == "利益順":
+            filtered = filtered.sort_values(["expected_profit", "id"], ascending=[False, False], na_position="last")
+        elif sort_by == "回転率順":
+            filtered = filtered.sort_values(["rotation_days", "id"], ascending=[True, False], na_position="last")
+        else:
+            filtered = filtered.sort_values("id", ascending=False)
 
-        filtered = [i for i in inventory if filter_status == "すべて" or eff_status(i) == filter_status]
-        filtered = search_filter(filtered, keyword, ["商品名", "ブランド", "カテゴリ"])
-        st.caption(f"{len(filtered)} 件表示")
+        st.write(f"表示件数: {len(filtered)}件")
+        for _, row in filtered.iterrows():
+            with st.expander(f"{row['item_code']} | {row['brand'] or '-'} | {row['name']} | {row['status']}"):
+                a, b = st.columns([1, 2])
+                with a:
+                    render_thumb(row.get("image_path"))
+                with b:
+                    info = {
+                        "商品コード": row.get("item_code"),
+                        "ブランド": row.get("brand"),
+                        "カテゴリ": row.get("category"),
+                        "サイズ": row.get("size"),
+                        "仕入れ": row.get("cost"),
+                        "販売予定価格": row.get("list_price"),
+                        "予定利益": row.get("expected_profit"),
+                        "保管場所": row.get("location"),
+                        "状態": row.get("status"),
+                        "売れた日": row.get("sold_date"),
+                        "販売場所": row.get("sold_channel"),
+                        "実際の販売額": row.get("actual_sale_price"),
+                        "実利益": row.get("actual_profit"),
+                        "回転日数": row.get("rotation_days"),
+                        "在庫日数": row.get("stock_days"),
+                        "メモ": row.get("notes"),
+                    }
+                    pretty = pd.DataFrame(list(info.items()), columns=["項目", "内容"])
+                    st.dataframe(pretty, width='stretch', hide_index=True)
 
-        for idx, item in enumerate(filtered):
-            real_idx = inventory.index(item)
-            status = eff_status(item)
-            icon = STATUS_ICON.get(status, "")
+                st.markdown("### 商品編集")
+                with st.form(f"edit_{int(row['id'])}"):
+                    e1, e2, e3 = st.columns(3)
+                    name = e1.text_input("商品名", value=row.get("name") or "")
+                    brand = e2.text_input("ブランド", value=row.get("brand") or "")
+                    category = e3.text_input("カテゴリ", value=row.get("category") or "")
+                    e4, e5, e6 = st.columns(3)
+                    size = e4.text_input("サイズ", value=row.get("size") or "")
+                    cost = e5.number_input("仕入れ値", min_value=0, step=100, value=int(row.get("cost") or 0), key=f"cost_{int(row['id'])}")
+                    list_price = e6.number_input("販売予定価格", min_value=0, step=100, value=int(row.get("list_price") or 0), key=f"list_{int(row['id'])}")
+                    e7, e8 = st.columns(2)
+                    location = e7.text_input("保管場所", value=row.get("location") or "")
+                    notes = e8.text_input("メモ", value=row.get("notes") or "")
+                    new_image = st.file_uploader("画像差し替え", type=["jpg", "jpeg", "png", "webp"], key=f"img_{int(row['id'])}")
+                    submitted = st.form_submit_button("更新")
+                    if submitted:
+                        update_item(int(row["id"]), {
+                            "name": name.strip(), "brand": brand.strip(), "category": category.strip(), "size": size.strip(),
+                            "cost": cost, "list_price": list_price, "location": location.strip(), "notes": notes.strip()
+                        }, new_image)
+                        st.success("商品情報を更新しました。")
 
-            with st.expander(f"{icon} **{item.get('商品名')}**  /  {item.get('ブランド', '—')}  /  {item.get('サイズ', '—')}  /  ¥{safe_int(item.get('販売予定価格')):,}"):
-                with st.form(f"edit_{idx}"):
-                    c1, c2, c3 = st.columns(3)
-                    name = c1.text_input("商品名", value=str(item.get("商品名", "")))
-                    brand = c2.text_input("ブランド", value=str(item.get("ブランド", "")))
-                    category = c3.text_input("カテゴリ", value=str(item.get("カテゴリ", "")))
-                    c4, c5, c6 = st.columns(3)
-                    size = c4.text_input("サイズ", value=str(item.get("サイズ", "")))
-                    buy_price = c5.number_input("仕入れ値", value=safe_int(item.get("仕入れ値")), step=100)
-                    sell_price = c6.number_input("販売予定価格", value=safe_int(item.get("販売予定価格")), step=100)
-                    c7, c8 = st.columns(2)
-                    try:
-                        bd = datetime.strptime(str(item.get("仕入れ日", ""))[:10], "%Y-%m-%d").date()
-                    except Exception:
-                        bd = datetime.now().date()
-                    buy_date = c7.date_input("仕入れ日", value=bd, key=f"bd_{idx}")
-                    location = c8.text_input("保管場所", value=str(item.get("保管場所", "")))
-                    memo = st.text_area("メモ", value=str(item.get("メモ", "")))
-                    if st.form_submit_button("💾 更新する", type="primary"):
-                        ok = gas_update("inventory", real_idx, [
-                            item["id"], name, brand, category, size,
-                            buy_price, sell_price, location, memo,
-                            item.get("登録日", ""), str(buy_date), item.get("状態", "在庫中")
-                        ])
-                        if ok:
-                            st.success("✅ 更新しました！")
-                            st.rerun()
+                if st.button("この商品を削除", key=f"delete_{int(row['id'])}"):
+                    delete_item(int(row["id"]))
+                    st.warning("商品を削除しました。ページを再読込すると一覧に反映されます。")
 
-                st.write("**状態を変更**")
-                col1, col2, col3 = st.columns(3)
-                if col1.button("🟢 在庫中", key=f"s1_{idx}", type="primary" if status == "在庫中" else "secondary"):
-                    st.session_state.setdefault("status_ov", {})[norm_id(item)] = "在庫中"
-                    gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "在庫中"])
-                    st.session_state.pop("sell_form_idx", None)
-                    st.rerun()
-                if col2.button("⚫ 販売済", key=f"s2_{idx}", type="primary" if status == "販売済" else "secondary"):
-                    st.session_state["sell_form_idx"] = idx
-                    st.rerun()
-                if col3.button("🟠 返品", key=f"s3_{idx}", type="primary" if status == "返品" else "secondary"):
-                    st.session_state.setdefault("status_ov", {})[norm_id(item)] = "返品"
-                    gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "返品"])
-                    st.session_state.pop("sell_form_idx", None)
-                    st.rerun()
-
-                # 販売済ボタン押下後に価格入力フォームを表示
-                if st.session_state.get("sell_form_idx") == idx:
-                    with st.form(key=f"sell_form_{idx}"):
-                        fc1, fc2 = st.columns(2)
-                        sell_price_input = fc1.number_input("💰 実売価格 (¥)", min_value=0, value=safe_int(item.get("販売予定価格")), step=100)
-                        sell_date_input = fc2.date_input("📅 販売日", value=datetime.now())
-                        sell_memo = st.text_input("メモ（任意）")
-                        if st.form_submit_button("✅ 販売記録", type="primary", use_container_width=True):
-                            sales = gas_get("sales")
-                            new_sid = str(int(max([int(s.get("id", 0)) for s in sales], default=0)) + 1)
-                            ok1 = gas_append("sales", [new_sid, item["id"], item.get("商品名"), item.get("ブランド"), sell_price_input, str(sell_date_input), sell_memo])
-                            ok2 = gas_update("inventory", real_idx, [item["id"], item.get("商品名"), item.get("ブランド"), item.get("カテゴリ"), item.get("サイズ"), item.get("仕入れ値"), item.get("販売予定価格"), item.get("保管場所"), item.get("メモ"), item.get("登録日"), item.get("仕入れ日", ""), "販売済"])
-                            if ok1 and ok2:
-                                st.session_state.setdefault("status_ov", {})[norm_id(item)] = "販売済"
-                                st.session_state.pop("sell_form_idx", None)
-                                st.rerun()
-
-# ── 販売取消・返品 ────────────────────────────────────────────────────
-elif menu == "↩️ 販売取消・返品":
-    st.title("↩️ 販売取消 / 返品")
-
-    sales = gas_get("sales")
-    keyword = st.text_input("🔍 検索（商品名・ブランド）")
-    filtered_sales = search_filter(sales, keyword, ["商品名", "ブランド"])
-
-    if not filtered_sales:
-        st.info("対象データがありません")
+elif page == "販売取消・返品":
+    st.subheader("販売取消 / 返品")
+    sold_like = df[df["status"].isin(["販売済み", "返品"])].copy() if not df.empty else pd.DataFrame()
+    if sold_like.empty:
+        st.info("対象データがありません。")
     else:
-        options = {
-            f"{s['商品名']}  /  {s.get('販売日', '')}  /  ¥{safe_int(s.get('実売価格')):,}": s
-            for s in filtered_sales
-        }
-        selected = st.selectbox("返品する販売記録を選択", list(options.keys()))
-        item = options[selected]
+        sold_like["label"] = sold_like.apply(lambda r: f"{r['item_code']} | {r['brand'] or '-'} | {r['name']} | {r['status']} | {str(r['sold_date'])[:10] if pd.notna(r['sold_date']) else '-'}", axis=1)
+        selected = st.selectbox("対象商品", sold_like["label"].tolist())
+        row = sold_like[sold_like["label"] == selected].iloc[0]
+        c1, c2 = st.columns(2)
+        if c1.button("販売取消して在庫に戻す"):
+            undo_sale(int(row["id"]), mark_return=False)
+            st.success("在庫中に戻しました。")
+        if c2.button("返品として記録する"):
+            undo_sale(int(row["id"]), mark_return=True)
+            st.success("返品ステータスに変更しました。")
 
-        st.info(f"**{item['商品名']}** / {item.get('ブランド', '')} / 販売日: {item.get('販売日', '')} / ¥{safe_int(item.get('実売価格')):,}")
-
-        with st.form("return"):
-            memo = st.text_area("返品メモ", placeholder="返品理由など")
-            if st.form_submit_button("↩️ 返品処理する", type="primary", use_container_width=True):
-                returns = gas_get("returns")
-                new_id = str(int(max([int(r.get("id", 0)) for r in returns], default=0)) + 1)
-                gas_append("returns", [new_id, item["id"], item["商品名"], str(datetime.now().date()), memo])
-
-                inventory = gas_get("inventory")
-                ok = update_inventory_status(inventory, item.get("商品id"), "在庫中")
-                if ok:
-                    st.session_state.setdefault("status_ov", {})[str(int(float(str(item.get("商品id", 0)))))] = "在庫中"
-                    st.success("✅ 返品処理しました！在庫に戻しました。")
-                else:
-                    st.warning("⚠️ 返品記録は保存しましたが、在庫ステータスの更新に失敗しました。在庫一覧から手動で「在庫中」に変更してください。")
-
-# ── CSV出力 ───────────────────────────────────────────────────────────
-elif menu == "📥 CSV出力":
-    st.title("📥 CSVエクスポート")
-
-    inventory = gas_get("inventory")
-    sales = gas_get("sales")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("在庫データ")
-        if inventory:
-            output = io.StringIO()
-            csv.DictWriter(output, fieldnames=INVENTORY_HEADERS, extrasaction="ignore").writeheader()
-            csv.DictWriter(output, fieldnames=INVENTORY_HEADERS, extrasaction="ignore").writerows(inventory)
-            st.download_button("📥 在庫CSVをダウンロード", output.getvalue(), "inventory.csv", "text/csv", use_container_width=True)
-        else:
-            st.info("データがありません")
-
-    with col2:
-        st.subheader("販売データ")
-        if sales:
-            output = io.StringIO()
-            csv.DictWriter(output, fieldnames=SALES_HEADERS, extrasaction="ignore").writeheader()
-            csv.DictWriter(output, fieldnames=SALES_HEADERS, extrasaction="ignore").writerows(sales)
-            st.download_button("📥 販売CSVをダウンロード", output.getvalue(), "sales.csv", "text/csv", use_container_width=True)
-        else:
-            st.info("データがありません")
+elif page == "CSV出力":
+    st.subheader("CSVエクスポート")
+    if df.empty:
+        st.info("出力できるデータがありません。")
+    else:
+        export_df = df.copy()
+        if "created_at" in export_df.columns:
+            export_df["created_at"] = export_df["created_at"].astype(str)
+        if "sold_date" in export_df.columns:
+            export_df["sold_date"] = export_df["sold_date"].astype(str)
+        csv_data = export_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("在庫データをCSVで保存", data=csv_data, file_name="inventory_export.csv", mime="text/csv")
+        sold_df = export_df[export_df["status"] == "販売済み"].copy()
+        if not sold_df.empty:
+            sold_csv = sold_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("販売データだけCSVで保存", data=sold_csv, file_name="sales_export.csv", mime="text/csv")
