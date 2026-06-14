@@ -318,7 +318,7 @@ if page == "ダッシュボード":
     st.subheader("売れ残りアラート")
     if not df.empty:
         in_stock = df[df["status"] == "在庫中"].copy()
-        alert = in_stock[in_stock["stock_days"].fillna(0) >= 30][["item_code", "name", "brand", "category", "stock_days", "location"]].sort_values("stock_days", ascending=False)
+        alert = in_stock[in_stock["stock_days"].fillna(0) >= 30][["item_code", "name", "brand", "category", "stock_days"]].sort_values("stock_days", ascending=False)
         if alert.empty:
             st.success("30日以上売れていない在庫はありません。")
         else:
@@ -333,13 +333,10 @@ elif page == "商品登録":
         name = c1.text_input("商品名 *")
         brand = c2.text_input("ブランド")
         category = category_picker(c3, "カテゴリ", "add_category")
-        c4, c5, c6 = st.columns(3)
-        size = c4.text_input("サイズ")
-        cost = c5.number_input("仕入れ値", min_value=0, step=100)
-        list_price = c6.number_input("販売予定価格", min_value=0, step=100)
-        c7, c8 = st.columns(2)
-        location = c7.text_input("保管場所 / ラック番号")
-        notes = c8.text_input("メモ")
+        c4, c5 = st.columns(2)
+        cost = c4.number_input("仕入れ値", min_value=0, step=100)
+        list_price = c5.number_input("販売予定価格", min_value=0, step=100)
+        notes = st.text_input("メモ")
         image = st.file_uploader("商品画像", type=["jpg", "jpeg", "png", "webp"])
         submitted = st.form_submit_button("登録")
         if submitted:
@@ -347,8 +344,8 @@ elif page == "商品登録":
                 st.error("商品名は必須です。")
             else:
                 add_item({
-                    "name": name.strip(), "brand": brand.strip(), "category": (category or "").strip(), "size": size.strip(),
-                    "cost": cost, "list_price": list_price, "location": location.strip(), "notes": notes.strip()
+                    "name": name.strip(), "brand": brand.strip(), "category": (category or "").strip(), "size": "",
+                    "cost": cost, "list_price": list_price, "location": "", "notes": notes.strip()
                 }, image)
                 st.success("商品を登録しました。左のメニューから在庫一覧で確認できます。")
 
@@ -370,7 +367,7 @@ elif page == "販売記録":
         if in_stock.empty:
             st.warning("該当する商品が見つかりません。")
         else:
-            in_stock["label"] = in_stock.apply(lambda r: f"{r['item_code']} | {r['brand'] or '-'} | {r['name']} | {r['size'] or '-'}", axis=1)
+            in_stock["label"] = in_stock.apply(lambda r: f"{r['item_code']} | {r['brand'] or '-'} | {r['name']}", axis=1)
             selected_label = st.selectbox("販売した商品", in_stock["label"].tolist())
             selected_row = in_stock[in_stock["label"] == selected_label].iloc[0]
             st.write(f"予定価格: ¥{int(selected_row['list_price'] or 0):,} / 仕入れ: ¥{int(selected_row['cost'] or 0):,}")
@@ -389,13 +386,12 @@ elif page == "在庫一覧・編集":
     if df.empty:
         st.info("まだ商品がありません。")
     else:
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4, c5 = st.columns(5)
         keyword = c1.text_input("キーワード")
         brand_filter = c2.selectbox("ブランド", ["全部"] + sorted([x for x in df["brand"].dropna().unique().tolist() if x]))
-        size_filter = c3.selectbox("サイズ", ["全部"] + sorted([x for x in df["size"].dropna().unique().tolist() if x]))
-        category_filter = c4.selectbox("カテゴリ", ["全部"] + sorted([x for x in df["category"].dropna().unique().tolist() if x]))
-        status_filter = c5.selectbox("状態", ["全部", "在庫中", "販売済み", "返品"])
-        sort_by = c6.selectbox("並び替え", ["登録順", "ブランド順", "価格順", "利益順", "回転率順"])
+        category_filter = c3.selectbox("カテゴリ", ["全部"] + sorted([x for x in df["category"].dropna().unique().tolist() if x]))
+        status_filter = c4.selectbox("状態", ["全部", "在庫中", "販売済み", "返品"])
+        sort_by = c5.selectbox("並び替え", ["登録順", "ブランド順", "価格順", "利益順", "回転率順"])
 
         filtered = df.copy()
         if keyword:
@@ -408,8 +404,6 @@ elif page == "在庫一覧・編集":
             filtered = filtered[mask]
         if brand_filter != "全部":
             filtered = filtered[filtered["brand"] == brand_filter]
-        if size_filter != "全部":
-            filtered = filtered[filtered["size"] == size_filter]
         if category_filter != "全部":
             filtered = filtered[filtered["category"] == category_filter]
         if status_filter != "全部":
@@ -437,11 +431,9 @@ elif page == "在庫一覧・編集":
                         "商品コード": row.get("item_code"),
                         "ブランド": row.get("brand"),
                         "カテゴリ": row.get("category"),
-                        "サイズ": row.get("size"),
                         "仕入れ": row.get("cost"),
                         "販売予定価格": row.get("list_price"),
                         "予定利益": row.get("expected_profit"),
-                        "保管場所": row.get("location"),
                         "状態": row.get("status"),
                         "売れた日": row.get("sold_date"),
                         "販売場所": row.get("sold_channel"),
@@ -465,19 +457,16 @@ elif page == "在庫一覧・編集":
                         f"edit_category_{int(row['id'])}",
                         row.get("category") or None,
                     )
-                    e4, e5, e6 = st.columns(3)
-                    size = e4.text_input("サイズ", value=row.get("size") or "")
-                    cost = e5.number_input("仕入れ値", min_value=0, step=100, value=int(row.get("cost") or 0), key=f"cost_{int(row['id'])}")
-                    list_price = e6.number_input("販売予定価格", min_value=0, step=100, value=int(row.get("list_price") or 0), key=f"list_{int(row['id'])}")
-                    e7, e8 = st.columns(2)
-                    location = e7.text_input("保管場所", value=row.get("location") or "")
-                    notes = e8.text_input("メモ", value=row.get("notes") or "")
+                    e4, e5 = st.columns(2)
+                    cost = e4.number_input("仕入れ値", min_value=0, step=100, value=int(row.get("cost") or 0), key=f"cost_{int(row['id'])}")
+                    list_price = e5.number_input("販売予定価格", min_value=0, step=100, value=int(row.get("list_price") or 0), key=f"list_{int(row['id'])}")
+                    notes = st.text_input("メモ", value=row.get("notes") or "")
                     new_image = st.file_uploader("画像差し替え", type=["jpg", "jpeg", "png", "webp"], key=f"img_{int(row['id'])}")
                     submitted = st.form_submit_button("更新")
                     if submitted:
                         update_item(int(row["id"]), {
-                            "name": name.strip(), "brand": brand.strip(), "category": (category or "").strip(), "size": size.strip(),
-                            "cost": cost, "list_price": list_price, "location": location.strip(), "notes": notes.strip()
+                            "name": name.strip(), "brand": brand.strip(), "category": (category or "").strip(), "size": row.get("size") or "",
+                            "cost": cost, "list_price": list_price, "location": row.get("location") or "", "notes": notes.strip()
                         }, new_image)
                         st.success("商品情報を更新しました。")
 
@@ -508,6 +497,7 @@ elif page == "CSV出力":
         st.info("出力できるデータがありません。")
     else:
         export_df = df.copy()
+        export_df = export_df.drop(columns=["size", "location"], errors="ignore")
         if "created_at" in export_df.columns:
             export_df["created_at"] = export_df["created_at"].astype(str)
         if "sold_date" in export_df.columns:
