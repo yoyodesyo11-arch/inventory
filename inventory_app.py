@@ -330,8 +330,8 @@ elif page == "商品登録":
     st.subheader("商品を追加")
     with st.form("add_item_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
-        name = c1.text_input("商品名 *")
-        brand = c2.text_input("ブランド")
+        brand = c1.text_input("ブランド")
+        name = c2.text_input("商品名 *")
         category = category_picker(c3, "カテゴリ", "add_category")
         c4, c5 = st.columns(2)
         cost = c4.number_input("仕入れ値", min_value=0, step=100)
@@ -449,8 +449,8 @@ elif page == "在庫一覧・編集":
                 st.markdown("### 商品編集")
                 with st.form(f"edit_{int(row['id'])}"):
                     e1, e2, e3 = st.columns(3)
-                    name = e1.text_input("商品名", value=row.get("name") or "")
-                    brand = e2.text_input("ブランド", value=row.get("brand") or "")
+                    brand = e1.text_input("ブランド", value=row.get("brand") or "")
+                    name = e2.text_input("商品名", value=row.get("name") or "")
                     category = category_picker(
                         e3,
                         "カテゴリ",
