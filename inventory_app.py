@@ -2,10 +2,12 @@
 import os
 import re
 import sqlite3
+import base64
 from datetime import date, datetime
 from typing import Optional
 
 import pandas as pd
+import requests
 import streamlit as st
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,6 +16,28 @@ IMG_DIR = os.path.join(APP_DIR, "images")
 os.makedirs(IMG_DIR, exist_ok=True)
 
 st.set_page_config(page_title="Vintage Inventory Pro", layout="wide")
+
+INVENTORY_COLUMNS = [
+    "id",
+    "item_code",
+    "name",
+    "brand",
+    "category",
+    "size",
+    "cost",
+    "list_price",
+    "actual_sale_price",
+    "expected_profit",
+    "actual_profit",
+    "location",
+    "notes",
+    "image_path",
+    "status",
+    "created_at",
+    "sold_date",
+    "sold_channel",
+    "return_flag",
+]
 
 CATEGORIES = [
     "Tシャツ",
@@ -57,7 +81,47 @@ def get_conn():
     return conn
 
 
+def get_supabase_config():
+    supabase = st.secrets.get("supabase", {})
+    url = supabase.get("url") or st.secrets.get("SUPABASE_URL")
+    key = supabase.get("key") or st.secrets.get("SUPABASE_KEY")
+    if not url or not key:
+        return None
+    return url.rstrip("/"), key
+
+
+def use_supabase() -> bool:
+    return get_supabase_config() is not None
+
+
+def supabase_request(method: str, params=None, json_data=None):
+    config = get_supabase_config()
+    if not config:
+        raise RuntimeError("Supabase settings are missing.")
+    url, key = config
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+    response = requests.request(
+        method,
+        f"{url}/rest/v1/inventory",
+        headers=headers,
+        params=params,
+        json=json_data,
+        timeout=20,
+    )
+    response.raise_for_status()
+    if response.content:
+        return response.json()
+    return []
+
+
 def init_db():
+    if use_supabase():
+        return
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -110,6 +174,28 @@ def next_item_code(conn) -> str:
     return f"{prefix}{num:03d}"
 
 
+def next_item_code_supabase() -> str:
+    yy_mm = datetime.now().strftime("%y%m")
+    prefix = f"NM-{yy_mm}-"
+    rows = supabase_request(
+        "GET",
+        params={
+            "select": "item_code",
+            "item_code": f"like.{prefix}*",
+            "order": "item_code.desc",
+            "limit": "1",
+        },
+    )
+    if not rows:
+        num = 1
+    else:
+        try:
+            num = int(str(rows[0].get("item_code", "")).split("-")[-1]) + 1
+        except Exception:
+            num = 1
+    return f"{prefix}{num:03d}"
+
+
 def save_uploaded_image(uploaded_file, item_code: str) -> Optional[str]:
     if uploaded_file is None:
         return None
@@ -121,10 +207,33 @@ def save_uploaded_image(uploaded_file, item_code: str) -> Optional[str]:
     return path
 
 
+def save_uploaded_image_for_supabase(uploaded_file) -> Optional[str]:
+    if uploaded_file is None:
+        return None
+    suffix = os.path.splitext(uploaded_file.name)[1].lower().replace(".", "")
+    mime = "jpeg" if suffix in ("jpg", "jpeg") else suffix or "png"
+    data = base64.b64encode(uploaded_file.getvalue()).decode("ascii")
+    return f"data:image/{mime};base64,{data}"
+
+
 def load_df() -> pd.DataFrame:
+    if use_supabase():
+        rows = supabase_request("GET", params={"select": "*", "order": "id.desc"})
+        df = pd.DataFrame(rows)
+        if df.empty:
+            return pd.DataFrame(columns=INVENTORY_COLUMNS)
+        for col in INVENTORY_COLUMNS:
+            if col not in df.columns:
+                df[col] = None
+        return prepare_df(df[INVENTORY_COLUMNS])
+
     conn = get_conn()
     df = pd.read_sql_query("SELECT * FROM inventory ORDER BY id DESC", conn)
     conn.close()
+    return prepare_df(df)
+
+
+def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     for col in ["cost", "list_price", "actual_sale_price", "expected_profit", "actual_profit"]:
@@ -159,6 +268,29 @@ def update_expected_profit(conn, item_id: int):
 
 
 def add_item(data, uploaded_file):
+    if use_supabase():
+        item_code = next_item_code_supabase()
+        img_path = save_uploaded_image_for_supabase(uploaded_file)
+        supabase_request(
+            "POST",
+            json_data={
+                "item_code": item_code,
+                "name": data["name"],
+                "brand": data["brand"],
+                "category": data["category"],
+                "size": data["size"],
+                "cost": data["cost"],
+                "list_price": data["list_price"],
+                "expected_profit": float(data["list_price"] or 0) - float(data["cost"] or 0),
+                "location": data["location"],
+                "notes": data["notes"],
+                "image_path": img_path,
+                "status": "在庫中",
+                "created_at": datetime.now().strftime("%Y-%m-%d"),
+            },
+        )
+        return
+
     conn = get_conn()
     item_code = next_item_code(conn)
     img_path = save_uploaded_image(uploaded_file, item_code)
@@ -190,6 +322,26 @@ def add_item(data, uploaded_file):
 
 
 def record_sale(item_id: int, sold_date: str, channel: str, sale_price: float):
+    if use_supabase():
+        rows = supabase_request("GET", params={"select": "cost", "id": f"eq.{item_id}", "limit": "1"})
+        if not rows:
+            return False
+        cost = float(rows[0].get("cost") or 0)
+        actual_profit = float(sale_price or 0) - cost
+        supabase_request(
+            "PATCH",
+            params={"id": f"eq.{item_id}"},
+            json_data={
+                "status": "販売済み",
+                "sold_date": sold_date,
+                "sold_channel": channel,
+                "actual_sale_price": sale_price,
+                "actual_profit": actual_profit,
+                "return_flag": 0,
+            },
+        )
+        return True
+
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT cost FROM inventory WHERE id=?", (item_id,))
@@ -213,6 +365,23 @@ def record_sale(item_id: int, sold_date: str, channel: str, sale_price: float):
 
 
 def undo_sale(item_id: int, mark_return: bool = False):
+    if use_supabase():
+        new_status = '返品' if mark_return else '在庫中'
+        return_flag = 1 if mark_return else 0
+        supabase_request(
+            "PATCH",
+            params={"id": f"eq.{item_id}"},
+            json_data={
+                "status": new_status,
+                "sold_date": None,
+                "sold_channel": None,
+                "actual_sale_price": None,
+                "actual_profit": None,
+                "return_flag": return_flag,
+            },
+        )
+        return
+
     conn = get_conn()
     cur = conn.cursor()
     new_status = '返品' if mark_return else '在庫中'
@@ -231,6 +400,10 @@ def undo_sale(item_id: int, mark_return: bool = False):
 
 
 def delete_item(item_id: int):
+    if use_supabase():
+        supabase_request("DELETE", params={"id": f"eq.{item_id}"})
+        return
+
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT image_path FROM inventory WHERE id=?", (item_id,))
@@ -246,6 +419,31 @@ def delete_item(item_id: int):
 
 
 def update_item(item_id: int, values: dict, uploaded_file):
+    if use_supabase():
+        rows = supabase_request("GET", params={"select": "image_path", "id": f"eq.{item_id}", "limit": "1"})
+        if not rows:
+            return
+        new_image_path = rows[0].get("image_path")
+        if uploaded_file is not None:
+            new_image_path = save_uploaded_image_for_supabase(uploaded_file)
+        supabase_request(
+            "PATCH",
+            params={"id": f"eq.{item_id}"},
+            json_data={
+                "name": values["name"],
+                "brand": values["brand"],
+                "category": values["category"],
+                "size": values["size"],
+                "cost": values["cost"],
+                "list_price": values["list_price"],
+                "expected_profit": float(values["list_price"] or 0) - float(values["cost"] or 0),
+                "location": values["location"],
+                "notes": values["notes"],
+                "image_path": new_image_path,
+            },
+        )
+        return
+
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT item_code, image_path FROM inventory WHERE id=?", (item_id,))
@@ -276,7 +474,9 @@ def update_item(item_id: int, values: dict, uploaded_file):
 
 
 def render_thumb(path: Optional[str]):
-    if path and os.path.exists(path):
+    if path and str(path).startswith("data:image/"):
+        st.image(path, width=90)
+    elif path and os.path.exists(path):
         st.image(path, width=90)
     else:
         st.caption("画像なし")
