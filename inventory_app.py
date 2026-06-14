@@ -15,6 +15,41 @@ os.makedirs(IMG_DIR, exist_ok=True)
 
 st.set_page_config(page_title="Vintage Inventory Pro", layout="wide")
 
+CATEGORIES = [
+    "Tシャツ",
+    "シャツ",
+    "スウェット",
+    "ニット",
+    "ジャケット",
+    "コート",
+    "デニム",
+    "パンツ",
+    "ショーツ",
+    "スカート",
+    "ワンピース",
+    "セットアップ",
+    "バッグ",
+    "シューズ",
+    "アクセサリー",
+    "その他",
+]
+
+
+def category_picker(container, label: str, key: str, default: Optional[str] = None) -> str:
+    options = CATEGORIES.copy()
+    if default and default not in options:
+        options.insert(0, default)
+    default_value = default if default in options else options[0]
+    if hasattr(st, "pills"):
+        return container.pills(label, options, default=default_value, key=key)
+    return container.radio(
+        label,
+        options,
+        index=options.index(default_value),
+        horizontal=True,
+        key=key,
+    )
+
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -297,7 +332,7 @@ elif page == "商品登録":
         c1, c2, c3 = st.columns(3)
         name = c1.text_input("商品名 *")
         brand = c2.text_input("ブランド")
-        category = c3.text_input("カテゴリ")
+        category = category_picker(c3, "カテゴリ", "add_category")
         c4, c5, c6 = st.columns(3)
         size = c4.text_input("サイズ")
         cost = c5.number_input("仕入れ値", min_value=0, step=100)
@@ -312,7 +347,7 @@ elif page == "商品登録":
                 st.error("商品名は必須です。")
             else:
                 add_item({
-                    "name": name.strip(), "brand": brand.strip(), "category": category.strip(), "size": size.strip(),
+                    "name": name.strip(), "brand": brand.strip(), "category": (category or "").strip(), "size": size.strip(),
                     "cost": cost, "list_price": list_price, "location": location.strip(), "notes": notes.strip()
                 }, image)
                 st.success("商品を登録しました。左のメニューから在庫一覧で確認できます。")
@@ -424,7 +459,12 @@ elif page == "在庫一覧・編集":
                     e1, e2, e3 = st.columns(3)
                     name = e1.text_input("商品名", value=row.get("name") or "")
                     brand = e2.text_input("ブランド", value=row.get("brand") or "")
-                    category = e3.text_input("カテゴリ", value=row.get("category") or "")
+                    category = category_picker(
+                        e3,
+                        "カテゴリ",
+                        f"edit_category_{int(row['id'])}",
+                        row.get("category") or None,
+                    )
                     e4, e5, e6 = st.columns(3)
                     size = e4.text_input("サイズ", value=row.get("size") or "")
                     cost = e5.number_input("仕入れ値", min_value=0, step=100, value=int(row.get("cost") or 0), key=f"cost_{int(row['id'])}")
@@ -436,7 +476,7 @@ elif page == "在庫一覧・編集":
                     submitted = st.form_submit_button("更新")
                     if submitted:
                         update_item(int(row["id"]), {
-                            "name": name.strip(), "brand": brand.strip(), "category": category.strip(), "size": size.strip(),
+                            "name": name.strip(), "brand": brand.strip(), "category": (category or "").strip(), "size": size.strip(),
                             "cost": cost, "list_price": list_price, "location": location.strip(), "notes": notes.strip()
                         }, new_image)
                         st.success("商品情報を更新しました。")
