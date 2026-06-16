@@ -560,7 +560,7 @@ elif page == "商品登録":
         s1, s2, s3 = st.columns(3)
         sold_date = s1.date_input("売れた日", value=date.today())
         sold_channel = s2.selectbox("販売場所", SALE_CHANNELS)
-        actual_sale_price = s3.number_input("実際の販売額", min_value=0, step=100, value=int(list_price or 0))
+        s3.number_input("実際の販売額", min_value=0, step=100, value=int(list_price or 0), disabled=True)
         notes = st.text_input("メモ")
         image = st.file_uploader("商品画像", type=["jpg", "jpeg", "png", "webp"])
         submitted = st.form_submit_button("登録")
@@ -574,7 +574,7 @@ elif page == "商品登録":
                     "is_sold": is_sold,
                     "sold_date": sold_date.strftime("%Y-%m-%d"),
                     "sold_channel": sold_channel,
-                    "actual_sale_price": actual_sale_price,
+                    "actual_sale_price": list_price,
                 }, image)
                 st.success("商品を登録しました。左のメニューから在庫一覧で確認できます。")
 
