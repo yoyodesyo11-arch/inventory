@@ -547,30 +547,35 @@ if page == "ダッシュボード":
 
 elif page == "商品登録":
     st.subheader("商品を追加")
+    if st.session_state.pop("add_item_saved", False):
+        st.success("商品を登録しました。左のメニューから在庫一覧で確認できます。")
+    add_reset_id = st.session_state.get("add_reset_id", 0)
     c1, c2, c3 = st.columns(3)
-    brand = c1.text_input("ブランド", key="add_brand")
-    name = c2.text_input("商品名 *", key="add_name")
-    category = category_picker(c3, "カテゴリ", "add_category")
+    brand = c1.text_input("ブランド", key=f"add_brand_{add_reset_id}")
+    name = c2.text_input("商品名 *", key=f"add_name_{add_reset_id}")
+    category = category_picker(c3, "カテゴリ", f"add_category_{add_reset_id}")
     c4, c5 = st.columns(2)
-    cost = c4.number_input("仕入れ値", min_value=0, step=100, key="add_cost")
-    list_price = c5.number_input("販売予定価格", min_value=0, step=100, key="add_list_price")
+    cost = c4.number_input("仕入れ値", min_value=0, step=100, key=f"add_cost_{add_reset_id}")
+    list_price = c5.number_input("販売予定価格", min_value=0, step=100, key=f"add_list_price_{add_reset_id}")
 
-    last_list_price = st.session_state.get("add_last_list_price")
+    last_price_key = f"add_last_list_price_{add_reset_id}"
+    actual_price_key = f"add_actual_sale_price_{add_reset_id}"
+    last_list_price = st.session_state.get(last_price_key)
     if (
         last_list_price != list_price
-        and st.session_state.get("add_actual_sale_price", last_list_price or 0) == (last_list_price or 0)
+        and st.session_state.get(actual_price_key, last_list_price or 0) == (last_list_price or 0)
     ):
-        st.session_state["add_actual_sale_price"] = int(list_price or 0)
-    st.session_state["add_last_list_price"] = int(list_price or 0)
+        st.session_state[actual_price_key] = int(list_price or 0)
+    st.session_state[last_price_key] = int(list_price or 0)
 
     st.markdown("#### 販売記録")
-    is_sold = st.checkbox("販売済みで登録する", key="add_is_sold")
+    is_sold = st.checkbox("販売済みで登録する", key=f"add_is_sold_{add_reset_id}")
     s1, s2, s3 = st.columns(3)
-    sold_date = s1.date_input("売れた日", value=date.today(), key="add_sold_date")
-    sold_channel = s2.selectbox("販売場所", SALE_CHANNELS, key="add_sold_channel")
-    actual_sale_price = s3.number_input("実際の販売額", min_value=0, step=100, key="add_actual_sale_price")
-    notes = st.text_input("メモ", key="add_notes")
-    image = st.file_uploader("商品画像", type=["jpg", "jpeg", "png", "webp"], key="add_image")
+    sold_date = s1.date_input("売れた日", value=date.today(), key=f"add_sold_date_{add_reset_id}")
+    sold_channel = s2.selectbox("販売場所", SALE_CHANNELS, key=f"add_sold_channel_{add_reset_id}")
+    actual_sale_price = s3.number_input("実際の販売額", min_value=0, step=100, key=actual_price_key)
+    notes = st.text_input("メモ", key=f"add_notes_{add_reset_id}")
+    image = st.file_uploader("商品画像", type=["jpg", "jpeg", "png", "webp"], key=f"add_image_{add_reset_id}")
     submitted = st.button("登録")
     if submitted:
         if not name.strip():
@@ -584,7 +589,9 @@ elif page == "商品登録":
                 "sold_channel": sold_channel,
                 "actual_sale_price": actual_sale_price,
             }, image)
-            st.success("商品を登録しました。左のメニューから在庫一覧で確認できます。")
+            st.session_state["add_item_saved"] = True
+            st.session_state["add_reset_id"] = add_reset_id + 1
+            st.rerun()
 
 elif page == "販売記録":
     st.subheader("販売記録をつける")
