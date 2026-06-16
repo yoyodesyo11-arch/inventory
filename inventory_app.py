@@ -58,6 +58,10 @@ CATEGORIES = [
 SALE_CHANNELS = ["店頭", "メルカリ", "BASE", "eBay", "その他"]
 
 
+def set_session_value(key: str, value):
+    st.session_state[key] = value
+
+
 def category_picker(container, label: str, key: str, default: Optional[str] = None) -> str:
     options = CATEGORIES.copy()
     if default and default not in options:
@@ -551,7 +555,28 @@ elif page == "商品登録":
         st.success("商品を登録しました。左のメニューから在庫一覧で確認できます。")
     add_reset_id = st.session_state.get("add_reset_id", 0)
     c1, c2, c3 = st.columns(3)
-    brand = c1.text_input("ブランド", key=f"add_brand_{add_reset_id}")
+    brand_key = f"add_brand_{add_reset_id}"
+    brand = c1.text_input("ブランド", key=brand_key)
+    if brand.strip() and not df.empty and "brand" in df.columns:
+        brand_query = brand.strip().lower()
+        existing_brands = sorted({
+            str(value).strip()
+            for value in df["brand"].dropna().tolist()
+            if str(value).strip()
+        })
+        brand_matches = [
+            value for value in existing_brands
+            if brand_query in value.lower() and value.lower() != brand_query
+        ][:5]
+        if brand_matches:
+            c1.caption("ブランド候補")
+            for index, match in enumerate(brand_matches):
+                c1.button(
+                    match,
+                    key=f"brand_suggestion_{add_reset_id}_{index}",
+                    on_click=set_session_value,
+                    args=(brand_key, match),
+                )
     name = c2.text_input("商品名 *", key=f"add_name_{add_reset_id}")
     category = category_picker(c3, "カテゴリ", f"add_category_{add_reset_id}")
     c4, c5 = st.columns(2)
