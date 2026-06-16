@@ -55,6 +55,8 @@ CATEGORIES = [
     "その他",
 ]
 
+SALE_CHANNELS = ["店頭", "メルカリ", "BASE", "eBay", "その他"]
+
 
 def category_picker(container, label: str, key: str, default: Optional[str] = None) -> str:
     options = CATEGORIES.copy()
@@ -265,6 +267,14 @@ def update_expected_profit(conn, item_id: int):
 
 
 def add_item(data, uploaded_file):
+    is_sold = bool(data.get("is_sold"))
+    sale_price = float(data.get("actual_sale_price") or 0)
+    cost = float(data["cost"] or 0)
+    actual_profit = sale_price - cost if is_sold else None
+    sold_date = data.get("sold_date") if is_sold else None
+    sold_channel = data.get("sold_channel") if is_sold else None
+    status = "販売済み" if is_sold else "在庫中"
+
     if use_supabase():
         item_code = next_item_code_supabase()
         img_path = save_uploaded_image_for_supabase(uploaded_file)
@@ -279,11 +289,16 @@ def add_item(data, uploaded_file):
                 "cost": data["cost"],
                 "list_price": data["list_price"],
                 "expected_profit": float(data["list_price"] or 0) - float(data["cost"] or 0),
+                "actual_sale_price": sale_price if is_sold else None,
+                "actual_profit": actual_profit,
                 "location": data["location"],
                 "notes": data["notes"],
                 "image_path": img_path,
-                "status": "在庫中",
+                "status": status,
                 "created_at": datetime.now().strftime("%Y-%m-%d"),
+                "sold_date": sold_date,
+                "sold_channel": sold_channel,
+                "return_flag": 0,
             },
         )
         return
@@ -296,8 +311,9 @@ def add_item(data, uploaded_file):
         """
         INSERT INTO inventory (
             item_code, name, brand, category, size, cost, list_price,
-            expected_profit, location, notes, image_path, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '在庫中', ?)
+            actual_sale_price, expected_profit, actual_profit, location, notes,
+            image_path, status, created_at, sold_date, sold_channel, return_flag
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             item_code,
@@ -307,11 +323,17 @@ def add_item(data, uploaded_file):
             data["size"],
             data["cost"],
             data["list_price"],
+            sale_price if is_sold else None,
             float(data["list_price"] or 0) - float(data["cost"] or 0),
+            actual_profit,
             data["location"],
             data["notes"],
             img_path,
+            status,
             datetime.now().strftime("%Y-%m-%d"),
+            sold_date,
+            sold_channel,
+            0,
         ),
     )
     conn.commit()
@@ -533,6 +555,12 @@ elif page == "商品登録":
         c4, c5 = st.columns(2)
         cost = c4.number_input("仕入れ値", min_value=0, step=100)
         list_price = c5.number_input("販売予定価格", min_value=0, step=100)
+        st.markdown("#### 販売記録")
+        is_sold = st.checkbox("販売済みで登録する")
+        s1, s2, s3 = st.columns(3)
+        sold_date = s1.date_input("売れた日", value=date.today())
+        sold_channel = s2.selectbox("販売場所", SALE_CHANNELS)
+        actual_sale_price = s3.number_input("実際の販売額", min_value=0, step=100, value=int(list_price or 0))
         notes = st.text_input("メモ")
         image = st.file_uploader("商品画像", type=["jpg", "jpeg", "png", "webp"])
         submitted = st.form_submit_button("登録")
@@ -542,7 +570,11 @@ elif page == "商品登録":
             else:
                 add_item({
                     "name": name.strip(), "brand": brand.strip(), "category": (category or "").strip(), "size": "",
-                    "cost": cost, "list_price": list_price, "location": "", "notes": notes.strip()
+                    "cost": cost, "list_price": list_price, "location": "", "notes": notes.strip(),
+                    "is_sold": is_sold,
+                    "sold_date": sold_date.strftime("%Y-%m-%d"),
+                    "sold_channel": sold_channel,
+                    "actual_sale_price": actual_sale_price,
                 }, image)
                 st.success("商品を登録しました。左のメニューから在庫一覧で確認できます。")
 
@@ -571,7 +603,7 @@ elif page == "販売記録":
             with st.form("sale_form"):
                 c1, c2, c3 = st.columns(3)
                 sold_date = c1.date_input("売れた日", value=date.today())
-                channel = c2.selectbox("販売場所", ["店頭", "メルカリ", "BASE", "eBay", "その他"])
+                channel = c2.selectbox("販売場所", SALE_CHANNELS)
                 sale_price = c3.number_input("実際の販売額", min_value=0, step=100, value=int(selected_row['list_price'] or 0))
                 submitted = st.form_submit_button("販売記録を保存")
                 if submitted:
