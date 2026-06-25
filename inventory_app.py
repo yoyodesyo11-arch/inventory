@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import base64
+import time
 from datetime import date, datetime
 from typing import Optional
 
@@ -108,14 +109,24 @@ def supabase_request(method: str, params=None, json_data=None):
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
-    response = requests.request(
-        method,
-        f"{url}/rest/v1/inventory",
-        headers=headers,
-        params=params,
-        json=json_data,
-        timeout=20,
-    )
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = requests.request(
+                method,
+                f"{url}/rest/v1/inventory",
+                headers=headers,
+                params=params,
+                json=json_data,
+                timeout=20,
+            )
+            break
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(1)
+    else:
+        raise last_error
     response.raise_for_status()
     if response.content:
         return response.json()
@@ -517,7 +528,12 @@ with st.sidebar:
     )
 
 
-df = load_df()
+try:
+    df = load_df()
+except requests.exceptions.RequestException:
+    st.error("Supabaseへの接続に失敗しました。少し待ってからブラウザを再読み込みしてください。")
+    st.caption("何度も出る場合は、SupabaseのURL / API Key、またはSupabase側の一時停止状態を確認してください。")
+    st.stop()
 
 if page == "ダッシュボード":
     current_month = datetime.now().strftime("%Y-%m")
