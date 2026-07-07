@@ -95,7 +95,12 @@ def get_supabase_config():
 
 
 def use_supabase() -> bool:
-    return get_supabase_config() is not None
+    return get_supabase_config() is not None and not st.session_state.get("use_local_fallback", False)
+
+
+def enable_local_fallback():
+    st.session_state["use_local_fallback"] = True
+    init_db()
 
 
 def supabase_request(method: str, params=None, json_data=None):
@@ -530,10 +535,13 @@ with st.sidebar:
 
 try:
     df = load_df()
-except requests.exceptions.RequestException:
-    st.error("Supabaseへの接続に失敗しました。少し待ってからブラウザを再読み込みしてください。")
-    st.caption("何度も出る場合は、SupabaseのURL / API Key、またはSupabase側の一時停止状態を確認してください。")
-    st.stop()
+except requests.exceptions.RequestException as exc:
+    enable_local_fallback()
+    df = load_df()
+    st.warning("Supabaseへの接続に失敗したため、一時保存モードで開いています。")
+    st.caption("本番データに戻すには、SupabaseのURL / API Key、またはSupabase側の一時停止状態を確認してからブラウザを再読み込みしてください。")
+    with st.expander("接続エラーの詳細"):
+        st.code(str(exc))
 
 if page == "ダッシュボード":
     current_month = datetime.now().strftime("%Y-%m")
