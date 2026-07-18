@@ -14,6 +14,7 @@ import streamlit as st
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "inventory.db")
 IMG_DIR = os.path.join(APP_DIR, "images")
+APP_TIMEZONE = "Asia/Tokyo"
 os.makedirs(IMG_DIR, exist_ok=True)
 
 st.set_page_config(page_title="Vintage Inventory Pro", layout="wide")
@@ -252,6 +253,14 @@ def load_df() -> pd.DataFrame:
     return prepare_df(df)
 
 
+def parse_app_datetime(series: pd.Series) -> pd.Series:
+    return (
+        pd.to_datetime(series, errors="coerce", utc=True, format="mixed")
+        .dt.tz_convert(APP_TIMEZONE)
+        .dt.tz_localize(None)
+    )
+
+
 def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -259,14 +268,14 @@ def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     if "created_at" in df.columns:
-        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True).dt.tz_convert(None)
+        df["created_at"] = parse_app_datetime(df["created_at"])
     if "sold_date" in df.columns:
-        df["sold_date"] = pd.to_datetime(df["sold_date"], errors="coerce", utc=True).dt.tz_convert(None)
+        df["sold_date"] = parse_app_datetime(df["sold_date"])
     if "created_at" in df.columns and "sold_date" in df.columns:
         df["rotation_days"] = (df["sold_date"] - df["created_at"]).dt.days
     else:
         df["rotation_days"] = None
-    today = pd.Timestamp.today().normalize()
+    today = pd.Timestamp.now(tz=APP_TIMEZONE).tz_localize(None).normalize()
     if "created_at" in df.columns:
         df["stock_days"] = (today - df["created_at"].dt.normalize()).dt.days
     else:
@@ -521,6 +530,25 @@ def render_thumb(path: Optional[str]):
         st.caption("画像なし")
 
 
+def render_sale_form(row, form_key: str):
+    st.write(f"予定価格: ¥{int(row['list_price'] or 0):,} / 仕入れ: ¥{int(row['cost'] or 0):,}")
+    with st.form(form_key):
+        c1, c2, c3 = st.columns(3)
+        sold_date = c1.date_input("売れた日", value=date.today(), key=f"{form_key}_sold_date")
+        channel = c2.selectbox("販売場所", SALE_CHANNELS, key=f"{form_key}_channel")
+        sale_price = c3.number_input(
+            "実際の販売額",
+            min_value=0,
+            step=100,
+            value=int(row["list_price"] or 0),
+            key=f"{form_key}_sale_price",
+        )
+        submitted = st.form_submit_button("販売記録を保存")
+        if submitted:
+            record_sale(int(row["id"]), sold_date.strftime("%Y-%m-%d"), channel, float(sale_price))
+            st.success("販売記録を保存しました。商品データにも反映されています。")
+
+
 init_db()
 st.title("古着屋 在庫管理アプリ 完全版")
 st.caption("商品画像つき / 販売記録 / 販売取消 / 商品編集 / 回転率 / 売れ残りチェック")
@@ -544,7 +572,7 @@ except requests.exceptions.RequestException as exc:
         st.code(str(exc))
 
 if page == "ダッシュボード":
-    current_month = datetime.now().strftime("%Y-%m")
+    current_month = pd.Timestamp.now(tz=APP_TIMEZONE).strftime("%Y-%m")
     sold_df = df[df["status"] == "販売済み"].copy() if not df.empty else pd.DataFrame()
     month_df = sold_df[sold_df["sold_date"].dt.strftime("%Y-%m") == current_month] if not sold_df.empty else pd.DataFrame()
 
@@ -663,16 +691,7 @@ elif page == "販売記録":
             in_stock["label"] = in_stock.apply(lambda r: f"{r['item_code']} | {r['brand'] or '-'} | {r['name']}", axis=1)
             selected_label = st.selectbox("販売した商品", in_stock["label"].tolist())
             selected_row = in_stock[in_stock["label"] == selected_label].iloc[0]
-            st.write(f"予定価格: ¥{int(selected_row['list_price'] or 0):,} / 仕入れ: ¥{int(selected_row['cost'] or 0):,}")
-            with st.form("sale_form"):
-                c1, c2, c3 = st.columns(3)
-                sold_date = c1.date_input("売れた日", value=date.today())
-                channel = c2.selectbox("販売場所", SALE_CHANNELS)
-                sale_price = c3.number_input("実際の販売額", min_value=0, step=100, value=int(selected_row['list_price'] or 0))
-                submitted = st.form_submit_button("販売記録を保存")
-                if submitted:
-                    record_sale(int(selected_row["id"]), sold_date.strftime("%Y-%m-%d"), channel, float(sale_price))
-                    st.success("販売記録を保存しました。商品データにも反映されています。")
+            render_sale_form(selected_row, "sale_form")
 
 elif page == "在庫一覧・編集":
     st.subheader("在庫一覧")
@@ -762,6 +781,10 @@ elif page == "在庫一覧・編集":
                             "cost": cost, "list_price": list_price, "location": row.get("location") or "", "notes": notes.strip()
                         }, new_image)
                         st.success("商品情報を更新しました。")
+
+                if row.get("status") == "在庫中":
+                    st.markdown("### 販売記録をつける")
+                    render_sale_form(row, f"sale_from_inventory_{int(row['id'])}")
 
                 if st.button("この商品を削除", key=f"delete_{int(row['id'])}"):
                     delete_item(int(row["id"]))
