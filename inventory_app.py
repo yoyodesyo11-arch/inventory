@@ -261,9 +261,17 @@ def parse_app_datetime(series: pd.Series) -> pd.Series:
     )
 
 
+def current_month_window():
+    month_start = pd.Timestamp.now(tz=APP_TIMEZONE).tz_localize(None).normalize().replace(day=1)
+    next_month_start = month_start + pd.offsets.MonthBegin(1)
+    return month_start, next_month_start
+
+
 def prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+    if "status" in df.columns:
+        df["status"] = df["status"].fillna("").astype(str).str.strip()
     for col in ["cost", "list_price", "actual_sale_price", "expected_profit", "actual_profit"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -572,9 +580,13 @@ except requests.exceptions.RequestException as exc:
         st.code(str(exc))
 
 if page == "ダッシュボード":
-    current_month = pd.Timestamp.now(tz=APP_TIMEZONE).strftime("%Y-%m")
+    month_start, next_month_start = current_month_window()
     sold_df = df[df["status"] == "販売済み"].copy() if not df.empty else pd.DataFrame()
-    month_df = sold_df[sold_df["sold_date"].dt.strftime("%Y-%m") == current_month] if not sold_df.empty else pd.DataFrame()
+    month_df = (
+        sold_df[(sold_df["sold_date"] >= month_start) & (sold_df["sold_date"] < next_month_start)]
+        if not sold_df.empty
+        else pd.DataFrame()
+    )
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("在庫数", int((df["status"] == "在庫中").sum()) if not df.empty else 0)
